@@ -355,6 +355,14 @@ class ProductCollectorGUI:
         except queue.Empty:
             pass
         finally:
+            # 로그 줄 수 제한 (1000줄 초과 시 오래된 500줄 삭제)
+            try:
+                line_count = int(self.log_text.index('end-1c').split('.')[0])
+                if line_count > 1000:
+                    self.log_text.delete('1.0', '501.0')
+            except:
+                pass
+
             # 100ms마다 큐 확인
             self.window.after(100, self._update_log_from_queue)
 

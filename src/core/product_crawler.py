@@ -304,6 +304,10 @@ class WomensClothingManualCaptcha:
                         print(f"[시작] 1번째 상품부터 모든 상품 수집...\n")
                         print(f"[정보] 광고 포함, 검색태그 없어도 수집\n")
 
+                        # 주기적 저장 설정
+                        if self.product_count is None:  # 무한 모드일 때만
+                            print(f"[정보] 100개마다 자동 DB 저장 활성화\n")
+
                         found_count = 0
                         idx = 0  # 1번째 상품부터 시작
 
@@ -314,7 +318,26 @@ class WomensClothingManualCaptcha:
                                 print(f"[중지] 사용자 요청으로 수집 중지 ({found_count}개 수집 완료)")
                                 break
 
-                            print(f"\n[{idx+1}번째 상품] 수집 중...")
+                            # 100개마다 자동 DB 저장 (무한 모드일 때만)
+                            if self.product_count is None and found_count > 0 and found_count % 100 == 0:
+                                print(f"\n{'='*60}")
+                                print(f"[자동 저장] {found_count}개 수집 완료, DB 저장 중...")
+                                try:
+                                    from src.database.db_connector import save_to_database
+                                    results = save_to_database(self.category_name, self.products_data, skip_duplicates=True)
+                                    print(f"[자동 저장] 완료! (신규: {results['saved']}개, 중복: {results['skipped']}개)")
+                                    # 저장 후 메모리 정리 (이미 저장된 데이터는 clear)
+                                    self.products_data.clear()
+                                except Exception as e:
+                                    print(f"[자동 저장 오류] {str(e)[:100]}")
+                                print(f"{'='*60}\n")
+
+                            # 간결한 로그 (10개마다만 상세 표시)
+                            if idx % 10 == 0:
+                                print(f"\n[{idx+1}번째 상품] 수집 중...")
+                            else:
+                                # 한 줄로 간결하게 (진행 중 표시)
+                                print(f"[{idx+1}] ", end="", flush=True)
 
                             try:
                                 # 처음 찾은 element 사용 (재탐색 하지 않음)
@@ -322,7 +345,10 @@ class WomensClothingManualCaptcha:
                                 href = await product_elem.get_attribute('href')
 
                                 if not href:
-                                    print(f"#{idx+1} [SKIP] URL을 가져올 수 없음")
+                                    if idx % 10 == 0:
+                                        print(f"#{idx+1} [SKIP] URL을 가져올 수 없음")
+                                    else:
+                                        print("⚠ ", end="", flush=True)
                                     idx += 1
                                     continue
                                 # 상품 클릭 (viewport로 스크롤 후 클릭)
@@ -388,8 +414,11 @@ class WomensClothingManualCaptcha:
                                 )
 
                                 if is_invalid:
-                                    print(f"#{idx+1} [SKIP] 잘못된 상품명: '{(product_name or 'None')[:30]}' - 다음 상품으로")
-                                    print(f"         현재 URL: {detail_page.url[:70]}")
+                                    if idx % 10 == 0:
+                                        print(f"#{idx+1} [SKIP] 잘못된 상품명: '{(product_name or 'None')[:30]}'")
+                                        print(f"         현재 URL: {detail_page.url[:70]}")
+                                    else:
+                                        print("✗ ", end="", flush=True)
                                     await detail_page.close()
                                     idx += 1
                                     continue
@@ -399,17 +428,25 @@ class WomensClothingManualCaptcha:
                                 self.products_data.append(self.product_data.copy())
                                 found_count += 1
 
-                                if self.product_count is None:
-                                    print(f"#{idx+1} [{product_name[:30]}] - 태그 {tags_count}개 (총 {found_count}개)")
+                                # 간결한 성공 로그
+                                if idx % 10 == 0:  # 10개마다 상세 로그
+                                    if self.product_count is None:
+                                        print(f"#{idx+1} [{product_name[:30]}] - 태그 {tags_count}개 (총 {found_count}개)")
+                                    else:
+                                        print(f"#{idx+1} [{product_name[:30]}] - 태그 {tags_count}개 ({found_count}/{self.product_count})")
                                 else:
-                                    print(f"#{idx+1} [{product_name[:30]}] - 태그 {tags_count}개 ({found_count}/{self.product_count})")
+                                    # 한 글자로 성공 표시
+                                    print("✓ ", end="", flush=True)
 
                                 # 탭 닫기
                                 await detail_page.close()
                                 await asyncio.sleep(1)
 
                             except Exception as e:
-                                print(f"#{idx+1} [ERROR] {str(e)[:50]}")
+                                if idx % 10 == 0:
+                                    print(f"#{idx+1} [ERROR] {str(e)[:50]}")
+                                else:
+                                    print("❌ ", end="", flush=True)
                                 try:
                                     if len(context.pages) > 2:
                                         await context.pages[-1].close()
