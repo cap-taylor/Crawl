@@ -4,19 +4,25 @@
 """
 import asyncio
 import json
+import sys
 from datetime import datetime
+from typing import Optional
 from playwright.async_api import async_playwright
 import re
 
+# DB 모듈 임포트
+sys.path.append('/home/dino/MyProjects/Crawl')
+from src.database.db_connector import save_to_database
+
 class WomensClothingManualCaptcha:
-    def __init__(self, headless=False, product_count=1, enable_screenshot=False):
+    def __init__(self, headless=False, product_count: Optional[int] = 1, enable_screenshot=False):
         self.headless = headless
-        self.product_count = product_count  # 수집할 상품 개수
+        self.product_count = product_count  # 수집할 상품 개수 (None이면 무한)
         self.enable_screenshot = enable_screenshot  # 스크린샷 활성화 여부
         self.products_data = []  # 여러 상품 저장
 
     async def wait_for_captcha_solve(self, page):
-        """캡차 해결 대기"""
+        """캡차 해결 대기 - 30초 고정"""
         print("\n" + "="*60)
         print("⚠️  캡차가 감지되었습니다!")
         print("="*60)
@@ -25,10 +31,10 @@ class WomensClothingManualCaptcha:
         print("2. '확인' 버튼 클릭")
         print("3. 정상 페이지가 나타날 때까지 대기")
         print("="*60)
-        print("⏰ 25초 동안 대기합니다...")
+        print("⏰ 30초 동안 대기합니다...")
 
-        # 25초 대기 (캡차 해결 시간)
-        for i in range(25, 0, -5):
+        # 30초 대기 (고정)
+        for i in range(30, 0, -5):
             print(f"[대기] 남은 시간: {i}초...")
             await asyncio.sleep(5)
 
@@ -126,7 +132,10 @@ class WomensClothingManualCaptcha:
                 await asyncio.sleep(2)
 
                 # 5. 상품 리스트 수집
-                print(f"\n[탐색] 상품 {self.product_count}개 수집 시작...")
+                if self.product_count is None:
+                    print(f"\n[탐색] 무한 모드 - 모든 상품 수집 시작...")
+                else:
+                    print(f"\n[탐색] 상품 {self.product_count}개 수집 시작...")
 
                 # 상품 찾기
                 product_selectors = [
@@ -156,16 +165,17 @@ class WomensClothingManualCaptcha:
                     await page.screenshot(path='data/final_page.png')
                     print("[스크린샷] data/final_page.png 저장됨")
                 else:
-                    # 검색태그가 있는 상품 찾기
-                    print(f"[시작] 검색태그가 있는 상품 찾기...\n")
-                    print(f"[정보] 광고 상품 건너뛰기 - 30번째 상품부터 시작\n")
+                    # 모든 상품 수집 (광고 포함, 검색태그 없어도 수집)
+                    print(f"[시작] 1번째 상품부터 모든 상품 수집...\n")
+                    print(f"[정보] 광고 포함, 검색태그 없어도 수집\n")
 
                     found_count = 0
-                    idx = 29  # 30번째 상품부터 시작 (1~15번째는 광고)
+                    idx = 0  # 1번째 상품부터 시작
 
-                    while found_count < self.product_count and idx < len(all_product_elements):
+                    # 무한 모드(product_count=None)이면 계속 수집, 아니면 개수 제한
+                    while (self.product_count is None or found_count < self.product_count) and idx < len(all_product_elements):
                         print(f"\n{'='*60}")
-                        print(f"[{idx+1}번째 상품] 검색태그 확인 중...")
+                        print(f"[{idx+1}번째 상품] 정보 수집 중...")
                         print(f"{'='*60}")
 
                         # 매번 새로 element 찾기 (DOM 변경 대응)
@@ -210,52 +220,35 @@ class WomensClothingManualCaptcha:
                                 pass
                             await asyncio.sleep(1)
 
-                            # 점진적으로 스크롤하면서 검색태그 찾기
-                            print(f"[스크롤] 천천히 스크롤하면서 검색태그 찾는 중...")
-                            has_tags = False
+                            # 페이지 끝까지 스크롤 (검색태그가 있을 수 있는 위치까지)
+                            print(f"[스크롤] 페이지 40% 위치로 스크롤...")
+                            await detail_page.evaluate('window.scrollTo(0, document.body.scrollHeight * 0.4)')
+                            await asyncio.sleep(2)
 
-                            # 페이지를 10단계로 나눠서 천천히 스크롤
-                            for scroll_step in range(1, 11):
-                                scroll_position = scroll_step * 10  # 10%, 20%, 30%... 100%
-                                await detail_page.evaluate(f'window.scrollTo(0, document.body.scrollHeight * {scroll_position / 100})')
-                                print(f"   → {scroll_position}% 위치 확인 중...")
-                                await asyncio.sleep(2)  # 2초 대기 (DOM 로드 시간)
+                            # 상품 정보 수집
+                            print(f"✅ 상품 정보 수집 시작...")
 
-                                # 각 단계에서 태그 확인
-                                has_tags = await self._check_search_tags(detail_page)
-                                if has_tags:
-                                    print(f"   ✓ {scroll_position}% 스크롤 위치에서 검색태그 발견!")
-                                    break
+                            # 현재 상품 데이터 초기화
+                            self.product_data = {}
+                            self.product_data['product_url'] = href
 
-                            if not has_tags:
-                                print(f"   ✗ 페이지 전체를 확인했지만 검색태그 없음")
+                            # 상세 정보 수집
+                            await self._collect_detail_page_info(detail_page)
 
-                            if has_tags:
-                                print(f"✅ 검색태그 발견! 상품 정보 수집 시작...")
-
-                                # 현재 상품 데이터 초기화
-                                self.product_data = {}
-                                self.product_data['product_url'] = href
-
-                                # 상세 정보 수집
-                                await self._collect_detail_page_info(detail_page)
-
-                                # 수집 완료
-                                self.products_data.append(self.product_data.copy())
-                                found_count += 1
-                                print(f"✅ 검색태그 있는 상품 수집 완료! ({found_count}/{self.product_count})")
-
-                                # 탭 닫기
-                                await detail_page.close()
-                                await asyncio.sleep(1)
+                            # 수집 완료
+                            self.products_data.append(self.product_data.copy())
+                            found_count += 1
+                            if self.product_count is None:
+                                print(f"✅ 상품 수집 완료! (총 {found_count}개)")
                             else:
-                                print(f"❌ 검색태그 없음 - 다음 상품으로...")
-                                # 탭 닫기
-                                await detail_page.close()
-                                await asyncio.sleep(1)
+                                print(f"✅ 상품 수집 완료! ({found_count}/{self.product_count})")
+
+                            # 탭 닫기
+                            await detail_page.close()
+                            await asyncio.sleep(1)
 
                         except Exception as e:
-                            print(f"[오류] {idx+1}번째 상품 확인 실패: {str(e)}")
+                            print(f"[오류] {idx+1}번째 상품 수집 실패: {str(e)}")
                             # 탭이 열려있으면 닫기
                             try:
                                 if len(context.pages) > 2:
@@ -266,7 +259,7 @@ class WomensClothingManualCaptcha:
                         idx += 1
 
                     print(f"\n{'='*60}")
-                    print(f"[완료] 검색태그 있는 상품 {found_count}개 수집 완료!")
+                    print(f"[완료] 총 {found_count}개 상품 수집 완료!")
                     print(f"[총 확인] {idx}개 상품 확인")
                     print(f"{'='*60}")
 
@@ -602,21 +595,32 @@ class WomensClothingManualCaptcha:
         print(f"[저장] 총 {len(self.products_data)}개 상품 저장됨")
         return filename
 
-    def save_to_db(self):
-        """DB에 저장 (구현 예정)"""
+    def save_to_db(self, skip_duplicates=True):
+        """DB에 저장 (중복 체크 선택 가능)"""
         if not self.products_data:
             print("[경고] DB에 저장할 데이터가 없습니다.")
             return False
 
-        print("\n[DB 저장 시뮬레이션]")
-        print(f"총 {len(self.products_data)}개 상품을 DB에 저장합니다:\n")
+        print("\n[DB 저장] PostgreSQL에 저장 시작...")
+        print(f"총 {len(self.products_data)}개 상품을 DB에 저장합니다:")
+        print(f"중복 체크: {'활성화' if skip_duplicates else '비활성화'}\n")
 
-        for idx, product in enumerate(self.products_data, 1):
-            info = product.get('product_info', {})
-            print(f"[{idx}] {info.get('product_name', 'N/A')[:40]}... (ID: {info.get('product_id', 'N/A')})")
+        try:
+            # DB 저장 실행
+            results = save_to_database('여성의류', self.products_data, skip_duplicates=skip_duplicates)
 
-        # TODO: 실제 DB 연결 및 저장 구현
-        return True
+            print(f"\n✅ DB 저장 완료:")
+            print(f"   - 신규 저장: {results['saved']}개")
+            print(f"   - 중복 스킵: {results['skipped']}개")
+            print(f"   - 저장 실패: {results['failed']}개")
+
+            return results['saved'] > 0 or results['skipped'] > 0
+
+        except Exception as e:
+            print(f"\n❌ DB 저장 중 오류 발생: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
 
     def print_summary(self):
         """수집 결과 요약"""
@@ -647,11 +651,11 @@ class WomensClothingManualCaptcha:
 if __name__ == "__main__":
     async def main():
         print("\n" + "="*60)
-        print("여성의류 상품 크롤링 - 검색태그 수집")
+        print("여성의류 상품 크롤링 - 전체 상품 수집 (중복 체크)")
         print("="*60)
 
-        # 1개 상품 수집 (스크린샷 비활성화)
-        crawler = WomensClothingManualCaptcha(product_count=1, enable_screenshot=False)
+        # 20개 상품 수집
+        crawler = WomensClothingManualCaptcha(product_count=20, enable_screenshot=False)
 
         # 크롤링 실행
         data = await crawler.crawl_with_manual_captcha()
@@ -660,7 +664,7 @@ if __name__ == "__main__":
             # JSON 저장
             crawler.save_to_json()
 
-            # DB 저장 (시뮬레이션)
+            # DB 저장 (중복 체크)
             crawler.save_to_db()
 
             # 요약 출력

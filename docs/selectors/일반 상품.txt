@@ -1,1 +1,0 @@
-#composite-card-list > div > ul:nth-child(1) > li:nth-child(1) > div > a

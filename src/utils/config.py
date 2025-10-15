@@ -11,8 +11,16 @@ DB_CONFIG = {
     'port': os.getenv('DB_PORT', '5432'),
     'database': os.getenv('DB_NAME', 'naver'),
     'user': os.getenv('DB_USER', 'postgres'),
-    'password': os.getenv('DB_PASSWORD', '')
+    'password': os.getenv('DB_PASSWORD')  # 비밀번호는 반드시 .env에서 설정
 }
+
+# DB 비밀번호 검증
+if not DB_CONFIG['password']:
+    raise ValueError(
+        "DB_PASSWORD 환경변수가 설정되지 않았습니다!\n"
+        ".env 파일을 만들고 DB_PASSWORD를 설정하세요.\n"
+        "참고: .env.example 파일 참조"
+    )
 
 # 크롤링 설정
 CRAWL_CONFIG = {
