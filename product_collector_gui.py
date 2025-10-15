@@ -1,12 +1,13 @@
 """
 네이버 쇼핑 상품 수집 GUI
-간단한 인터페이스로 여성의류 상품 정보를 수집합니다.
+간단한 인터페이스로 다양한 카테고리의 상품 정보를 수집합니다.
 """
 import sys
 import asyncio
 import threading
 import queue
 import re
+import json
 from datetime import datetime
 import customtkinter as ctk
 
@@ -43,7 +44,7 @@ class ProductCollectorGUI:
     def __init__(self):
         self.window = ctk.CTk()
         self.window.title("네이버 쇼핑 상품 수집기")
-        self.window.geometry("900x700")
+        self.window.geometry("900x750")
 
         # 테마 설정
         ctk.set_appearance_mode("dark")
@@ -56,11 +57,39 @@ class ProductCollectorGUI:
         # 로그 큐 (스레드 간 통신용)
         self.log_queue = queue.Queue()
 
+        # 카테고리 데이터 로드
+        self.categories = self._load_categories()
+
         # GUI 구성
         self._create_widgets()
 
         # 로그 업데이트 타이머
         self.window.after(100, self._update_log_from_queue)
+
+    def _load_categories(self):
+        """카테고리 JSON 파일에서 카테고리 목록 로드"""
+        try:
+            with open('data/naver_categories_hierarchy.json', 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                categories_data = data.get('카테고리', {})
+
+                # 카테고리 목록 생성 (이름: ID)
+                categories = {}
+                for cat_name, cat_info in categories_data.items():
+                    cat_id = cat_info.get('id')
+                    if cat_id:
+                        categories[cat_name] = cat_id
+
+                return categories
+        except Exception as e:
+            print(f"[경고] 카테고리 파일 로드 실패: {e}")
+            # 기본 카테고리만 제공
+            return {
+                "여성의류": "10000107",
+                "남성의류": "10000108",
+                "패션잡화": "10000109",
+                "신발": "10000110"
+            }
 
     def _create_widgets(self):
         """GUI 위젯 생성"""
@@ -72,7 +101,7 @@ class ProductCollectorGUI:
         # 제목
         title_label = ctk.CTkLabel(
             main_frame,
-            text="네이버 쇼핑 여성의류 상품 수집기",
+            text="네이버 쇼핑 상품 수집기",
             font=("Arial", 24, "bold")
         )
         title_label.pack(pady=(0, 20))
@@ -80,6 +109,40 @@ class ProductCollectorGUI:
         # 설정 프레임
         settings_frame = ctk.CTkFrame(main_frame)
         settings_frame.pack(fill="x", pady=(0, 20))
+
+        # 카테고리 선택 프레임
+        category_frame = ctk.CTkFrame(settings_frame)
+        category_frame.pack(fill="x", padx=10, pady=10)
+
+        ctk.CTkLabel(category_frame, text="카테고리 선택:", font=("Arial", 14, "bold")).pack(anchor="w", pady=(0, 5))
+
+        # 카테고리 드롭다운
+        category_dropdown_frame = ctk.CTkFrame(category_frame)
+        category_dropdown_frame.pack(fill="x", pady=5)
+
+        category_names = list(self.categories.keys())
+        self.selected_category = ctk.StringVar(value="여성의류")  # 기본값
+
+        self.category_dropdown = ctk.CTkOptionMenu(
+            category_dropdown_frame,
+            variable=self.selected_category,
+            values=category_names,
+            font=("Arial", 12),
+            width=300
+        )
+        self.category_dropdown.pack(side="left", padx=(0, 10))
+
+        # 선택된 카테고리 정보 표시
+        self.category_info_label = ctk.CTkLabel(
+            category_dropdown_frame,
+            text=f"ID: {self.categories.get('여성의류', 'N/A')}",
+            font=("Arial", 11),
+            text_color="gray"
+        )
+        self.category_info_label.pack(side="left")
+
+        # 카테고리 변경 이벤트 핸들러
+        self.selected_category.trace_add('write', self._on_category_change)
 
         # 수집 모드 선택
         mode_frame = ctk.CTkFrame(settings_frame)
@@ -201,11 +264,34 @@ class ProductCollectorGUI:
         log_frame = ctk.CTkFrame(main_frame)
         log_frame.pack(fill="both", expand=True)
 
-        ctk.CTkLabel(log_frame, text="실시간 로그:", font=("Arial", 12, "bold")).pack(anchor="w", padx=10, pady=(10, 5))
+        # 로그 헤더 (제목 + 복사 버튼)
+        log_header_frame = ctk.CTkFrame(log_frame)
+        log_header_frame.pack(fill="x", padx=10, pady=(10, 5))
+
+        ctk.CTkLabel(log_header_frame, text="실시간 로그:", font=("Arial", 12, "bold")).pack(side="left")
+
+        # 로그 복사 버튼
+        self.copy_log_button = ctk.CTkButton(
+            log_header_frame,
+            text="로그 복사",
+            command=self._copy_log,
+            font=("Arial", 11),
+            width=100,
+            height=28,
+            fg_color="gray30",
+            hover_color="gray40"
+        )
+        self.copy_log_button.pack(side="right")
 
         # 로그 텍스트 박스 (스크롤바 포함)
         self.log_text = ctk.CTkTextbox(log_frame, font=("Courier", 11))
         self.log_text.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
+    def _on_category_change(self, *args):
+        """카테고리 선택 변경 시 호출"""
+        category_name = self.selected_category.get()
+        category_id = self.categories.get(category_name, "N/A")
+        self.category_info_label.configure(text=f"ID: {category_id}")
 
     def _toggle_count_entry(self):
         """수집 모드에 따라 개수 입력 필드 활성화/비활성화"""
@@ -263,6 +349,8 @@ class ProductCollectorGUI:
         # 로그 초기화
         self.log_text.delete("1.0", "end")
         self._log("="*60)
+        category_name = self.selected_category.get()
+        self._log(f"카테고리: {category_name}")
         if is_infinite:
             self._log("전체 상품 수집 시작 (무한 모드)")
             self._log("중단하려면 '수집 중지' 버튼을 클릭하세요")
@@ -290,6 +378,10 @@ class ProductCollectorGUI:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
 
+            # 선택된 카테고리 정보 가져오기
+            category_name = self.selected_category.get()
+            category_id = self.categories.get(category_name, "10000107")
+
             # 크롤러 생성
             # 무한 모드면 product_count=None (무한 수집)
             actual_count = None if is_infinite else product_count
@@ -297,7 +389,9 @@ class ProductCollectorGUI:
             self.crawler = WomensClothingManualCaptcha(
                 product_count=actual_count,
                 headless=False,
-                enable_screenshot=False
+                enable_screenshot=False,
+                category_name=category_name,
+                category_id=category_id
             )
 
             # 크롤러의 print를 가로채서 로그로 리다이렉트
@@ -381,14 +475,26 @@ class ProductCollectorGUI:
         sys.stdout = LogRedirector(self._log)
         sys.stderr = LogRedirector(self._log)
 
+    def _copy_log(self):
+        """로그 내용을 클립보드에 복사"""
+        log_content = self.log_text.get("1.0", "end-1c")
+        self.window.clipboard_clear()
+        self.window.clipboard_append(log_content)
+        self._log("로그가 클립보드에 복사되었습니다.")
+
     def _stop_crawling(self):
         """크롤링 중지"""
         if not self.is_running:
             return
 
         self._log("")
-        self._log("중지 요청됨... (크롤러가 안전하게 종료될 때까지 대기)")
+        self._log("중지 요청됨... (현재 상품 수집 완료 후 종료)")
         self.is_running = False
+
+        # 크롤러에도 중지 신호 전달
+        if self.crawler:
+            self.crawler.should_stop = True
+
         self.status_label.configure(text="중지 중...")
 
     def run(self):

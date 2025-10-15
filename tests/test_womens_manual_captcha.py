@@ -15,11 +15,15 @@ sys.path.append('/home/dino/MyProjects/Crawl')
 from src.database.db_connector import save_to_database
 
 class WomensClothingManualCaptcha:
-    def __init__(self, headless=False, product_count: Optional[int] = 1, enable_screenshot=False):
+    def __init__(self, headless=False, product_count: Optional[int] = 1, enable_screenshot=False,
+                 category_name: str = "여성의류", category_id: str = "10000107"):
         self.headless = headless
         self.product_count = product_count  # 수집할 상품 개수 (None이면 무한)
         self.enable_screenshot = enable_screenshot  # 스크린샷 활성화 여부
+        self.category_name = category_name  # 카테고리 이름
+        self.category_id = category_id  # 카테고리 ID
         self.products_data = []  # 여러 상품 저장
+        self.should_stop = False  # 중지 플래그 (GUI에서 설정)
 
     async def wait_for_captcha_solve(self, page):
         """캡차 해결 대기 - 30초 고정"""
@@ -91,10 +95,10 @@ class WomensClothingManualCaptcha:
                 await category_btn.click()
                 await asyncio.sleep(2)
 
-                # 4. 여성의류 클릭
-                print("[클릭] 여성의류 카테고리...")
-                womens = await page.wait_for_selector('a[data-name="여성의류"]')
-                await womens.click()
+                # 4. 선택한 카테고리 클릭
+                print(f"[클릭] {self.category_name} 카테고리...")
+                category_elem = await page.wait_for_selector(f'a[data-name="{self.category_name}"]')
+                await category_elem.click()
 
                 # 페이지 로드 대기 (충분한 시간)
                 print("[대기] 페이지 로딩 중...")
@@ -174,9 +178,12 @@ class WomensClothingManualCaptcha:
 
                     # 무한 모드(product_count=None)이면 계속 수집, 아니면 개수 제한
                     while (self.product_count is None or found_count < self.product_count) and idx < len(all_product_elements):
-                        print(f"\n{'='*60}")
-                        print(f"[{idx+1}번째 상품] 정보 수집 중...")
-                        print(f"{'='*60}")
+                        # 중지 요청 확인
+                        if self.should_stop:
+                            print(f"[중지] 사용자 요청으로 수집 중지 ({found_count}개 수집 완료)")
+                            break
+
+                        print(f"\n[{idx+1}번째 상품] 수집 중...")
 
                         # 매번 새로 element 찾기 (DOM 변경 대응)
                         current_elements = await page.query_selector_all('a[href*="/products/"]')
@@ -186,32 +193,22 @@ class WomensClothingManualCaptcha:
 
                         product_elem = current_elements[idx]
                         href = await product_elem.get_attribute('href')
-                        print(f"[URL] {href[:80]}...")
 
-                        # 상품 클릭
-                        print(f"[클릭] 상품 상세 페이지로 이동...")
                         try:
-                            # 요소가 안정적인지 확인 (viewport에 보이고 클릭 가능한지)
+                            # 상품 클릭
                             await product_elem.scroll_into_view_if_needed()
                             await asyncio.sleep(0.5)
-
-                            # 상품 클릭
                             await product_elem.click()
-                            print(f"[대기] 새 탭이 열리는 중...")
-                            await asyncio.sleep(3)  # 새 탭이 열릴 때까지 충분히 대기
+                            await asyncio.sleep(3)
 
                             # 새 탭 찾기
                             all_pages = context.pages
                             if len(all_pages) <= 1:
-                                print(f"[경고] 새 탭이 열리지 않았습니다. 다음 상품으로...")
+                                print(f"#{idx+1} [SKIP] 탭 열림 실패")
                                 idx += 1
                                 continue
 
-                            # 가장 최근에 열린 탭 선택
                             detail_page = all_pages[-1]
-                            print(f"[확인] 새 탭 열림 (총 {len(all_pages)}개 탭)")
-
-                            # 페이지 완전히 로드될 때까지 대기
                             await detail_page.wait_for_load_state('domcontentloaded')
                             await asyncio.sleep(1)
                             try:
@@ -220,36 +217,35 @@ class WomensClothingManualCaptcha:
                                 pass
                             await asyncio.sleep(1)
 
-                            # 페이지 끝까지 스크롤 (검색태그가 있을 수 있는 위치까지)
-                            print(f"[스크롤] 페이지 40% 위치로 스크롤...")
+                            # 스크롤 (검색태그 위치)
                             await detail_page.evaluate('window.scrollTo(0, document.body.scrollHeight * 0.4)')
                             await asyncio.sleep(2)
 
                             # 상품 정보 수집
-                            print(f"✅ 상품 정보 수집 시작...")
-
-                            # 현재 상품 데이터 초기화
                             self.product_data = {}
                             self.product_data['product_url'] = href
-
-                            # 상세 정보 수집
                             await self._collect_detail_page_info(detail_page)
+
+                            # 한 줄 요약 출력
+                            detail_info = self.product_data.get('detail_page_info', {})
+                            product_name = detail_info.get('detail_product_name', 'N/A')[:30]
+                            tags_count = len(detail_info.get('search_tags', []))
 
                             # 수집 완료
                             self.products_data.append(self.product_data.copy())
                             found_count += 1
+
                             if self.product_count is None:
-                                print(f"✅ 상품 수집 완료! (총 {found_count}개)")
+                                print(f"#{idx+1} [{product_name}] - 태그 {tags_count}개 (총 {found_count}개)")
                             else:
-                                print(f"✅ 상품 수집 완료! ({found_count}/{self.product_count})")
+                                print(f"#{idx+1} [{product_name}] - 태그 {tags_count}개 ({found_count}/{self.product_count})")
 
                             # 탭 닫기
                             await detail_page.close()
                             await asyncio.sleep(1)
 
                         except Exception as e:
-                            print(f"[오류] {idx+1}번째 상품 수집 실패: {str(e)}")
-                            # 탭이 열려있으면 닫기
+                            print(f"#{idx+1} [ERROR] {str(e)[:50]}")
                             try:
                                 if len(context.pages) > 2:
                                     await context.pages[-1].close()
@@ -355,7 +351,7 @@ class WomensClothingManualCaptcha:
             print(f"✓ 썸네일: 수집 완료")
 
         self.product_data = {
-            'category': '여성의류',
+            'category': self.category_name,
             'crawled_at': datetime.now().isoformat(),
             'product_info': info
         }
@@ -416,159 +412,108 @@ class WomensClothingManualCaptcha:
             return False
 
     async def _collect_detail_page_info(self, page):
-        """상세 페이지에서 추가 정보 수집"""
-        print("\n[수집] 상세 페이지 정보 수집 시작...")
-
+        """상세 페이지에서 추가 정보 수집 (간결한 로그)"""
         detail_info = {}
 
-        # 검색태그 수집 (관련 태그 섹션의 해시태그)
+        # 검색태그 수집
         try:
-            print(f"[디버깅] 검색태그 수집 시작...")
             tags = []
-
-            # 페이지 내 모든 링크에서 # 으로 시작하는 텍스트 찾기
             all_links = await page.query_selector_all('a')
-            print(f"[디버깅] 총 {len(all_links)}개 링크 발견")
-
-            tag_count = 0
-            # 제한 제거: 모든 링크 확인
-            for idx, link in enumerate(all_links):
+            for link in all_links:
                 try:
                     text = await link.inner_text()
                     if text and text.strip().startswith('#'):
                         clean_tag = text.strip().replace('#', '').strip()
                         if 1 < len(clean_tag) < 30 and clean_tag not in tags:
                             tags.append(clean_tag)
-                            tag_count += 1
-                            if tag_count <= 5:  # 처음 5개만 출력
-                                print(f"   [발견] 태그 #{idx}: {clean_tag}")
                 except:
                     continue
-
             if tags:
                 detail_info['search_tags'] = tags
-                print(f"✓ 검색태그: {len(tags)}개 - {', '.join(tags)}...")
-            else:
-                print(f"[경고] 검색태그를 찾을 수 없습니다!")
-        except Exception as e:
-            print(f"   [오류] 태그 수집 중 오류: {str(e)}")
-            import traceback
-            traceback.print_exc()
+        except:
             pass
 
-        # 상품명 (상세)
+        # 상품명
         try:
-            title_selectors = [
-                'h3[class*="title"]',
-                'h2[class*="title"]',
-                'div[class*="productTitle"]',
-                '[class*="product_title"]'
-            ]
+            title_selectors = ['h3[class*="title"]', 'h2[class*="title"]', 'div[class*="productTitle"]', '[class*="product_title"]']
             for selector in title_selectors:
                 elem = await page.query_selector(selector)
                 if elem:
                     detail_info['detail_product_name'] = await elem.inner_text()
-                    print(f"✓ 상세 상품명: {detail_info['detail_product_name'][:40]}...")
                     break
         except:
             pass
 
-        # 상세 가격
+        # 가격
         try:
-            price_selectors = [
-                'span[class*="price"] em',
-                'strong[class*="price"]',
-                '[class*="total_price"]',
-                'em[class*="salePrice"]'
-            ]
+            price_selectors = ['span[class*="price"] em', 'strong[class*="price"]', '[class*="total_price"]', 'em[class*="salePrice"]']
             for selector in price_selectors:
                 elem = await page.query_selector(selector)
                 if elem:
                     price_text = await elem.inner_text()
                     detail_info['detail_price'] = price_text.replace(',', '').replace('원', '')
-                    print(f"✓ 상세 가격: {detail_info['detail_price']}원")
                     break
         except:
             pass
 
-        # 옵션 정보
+        # 옵션
         try:
             option_elems = await page.query_selector_all('select option, [class*="option"] button')
-            options = []
-            for opt in option_elems[:10]:
-                opt_text = await opt.inner_text()
-                if opt_text and opt_text.strip():
-                    options.append(opt_text.strip())
+            options = [await opt.inner_text() for opt in option_elems[:10] if (await opt.inner_text()).strip()]
             if options:
                 detail_info['options'] = options
-                print(f"✓ 옵션: {len(options)}개")
         except:
             pass
 
-        # 상세 이미지들
+        # 이미지
         try:
             img_elems = await page.query_selector_all('img')
-            images = []
-            for img in img_elems[:10]:
-                src = await img.get_attribute('src')
-                if src and ('image' in src or 'img' in src):
-                    images.append(src)
+            images = [await img.get_attribute('src') for img in img_elems[:10] if (await img.get_attribute('src')) and ('image' in (await img.get_attribute('src')) or 'img' in (await img.get_attribute('src')))]
             if images:
                 detail_info['detail_images'] = images
-                print(f"✓ 상세 이미지: {len(images)}개")
         except:
             pass
 
-        # 판매자 정보
+        # 판매자
         try:
-            seller_selectors = [
-                '[class*="seller"]',
-                '[class*="store"]',
-                '[class*="brandShop"]'
-            ]
+            seller_selectors = ['[class*="seller"]', '[class*="store"]', '[class*="brandShop"]']
             for selector in seller_selectors:
                 elem = await page.query_selector(selector)
                 if elem:
                     detail_info['seller'] = await elem.inner_text()
-                    print(f"✓ 판매자: {detail_info['seller'][:30]}...")
                     break
         except:
             pass
 
-        # 배송 정보
+        # 배송
         try:
             delivery_elem = await page.query_selector('[class*="delivery"], [class*="shipping"]')
             if delivery_elem:
                 detail_info['delivery_detail'] = await delivery_elem.inner_text()
-                print(f"✓ 배송 정보: {detail_info['delivery_detail'][:30]}...")
         except:
             pass
 
-        # 리뷰 및 평점 (상세)
+        # 리뷰
         try:
             review_elem = await page.query_selector('[class*="reviewCount"], [class*="review_count"]')
             if review_elem:
-                review_text = await review_elem.inner_text()
-                detail_info['detail_review_count'] = review_text
-                print(f"✓ 리뷰 수 (상세): {review_text}")
+                detail_info['detail_review_count'] = await review_elem.inner_text()
         except:
             pass
 
-        # 현재 URL
+        # URL
         detail_info['detail_page_url'] = page.url
-        print(f"✓ 상세 페이지 URL: {page.url[:60]}...")
 
-        # 기존 product_data에 상세 정보 추가
+        # 데이터 저장
         if self.product_data:
             self.product_data['detail_page_info'] = detail_info
         else:
             self.product_data = {
-                'category': '여성의류',
+                'category': self.category_name,
                 'crawled_at': datetime.now().isoformat(),
                 'detail_page_info': detail_info
             }
 
-        print(f"\n[완료] 상세 페이지 {len(detail_info)}개 항목 수집")
         return detail_info
 
     def save_to_json(self):
@@ -582,7 +527,7 @@ class WomensClothingManualCaptcha:
 
         # 여러 상품 데이터를 배열로 저장
         output = {
-            'category': '여성의류',
+            'category': self.category_name,
             'total_count': len(self.products_data),
             'crawled_at': timestamp,
             'products': self.products_data
@@ -607,7 +552,7 @@ class WomensClothingManualCaptcha:
 
         try:
             # DB 저장 실행
-            results = save_to_database('여성의류', self.products_data, skip_duplicates=skip_duplicates)
+            results = save_to_database(self.category_name, self.products_data, skip_duplicates=skip_duplicates)
 
             print(f"\n✅ DB 저장 완료:")
             print(f"   - 신규 저장: {results['saved']}개")
