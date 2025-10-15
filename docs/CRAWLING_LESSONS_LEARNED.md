@@ -3,7 +3,7 @@
 > 이 문서는 네이버 쇼핑 크롤링 개발 과정에서 겪은 모든 시행착오와 해결책을 기록합니다.
 > **절대 같은 실수를 반복하지 않기 위한 필수 참고 문서입니다.**
 
-## 📅 최종 업데이트: 2025-09-26
+## 📅 최종 업데이트: 2025-10-15
 
 ---
 
@@ -346,9 +346,15 @@ user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
 | 2025-09-26 | 브라우저 중복 실행 문제 | ❌ 이미 열려있는데 새로 실행 |
 | 2025-09-26 | Playwright MCP 토큰 초과 문제 | ❌ 응답 25,000 토큰 초과 에러 |
 | 2025-09-26 | 일반 Playwright + Firefox | ✅ 플러스스토어 접속 성공! |
-| 2025-09-26 | Firefox 전체화면 설정 | ✅ --kiosk 옵션으로 성공! |
 | 2025-09-26 | 새 탭 전환 + 캡차 회피 | ✅ 클릭→새탭→캡차 없음! |
 | 2025-09-26 | 카테고리 → 남성의류 클릭 | ⚠️ 캡차 발생! |
+| 2025-10-15 | 여성의류 + 수동 캡차 해결 | ✅ 25초 대기로 캡차 통과 |
+| 2025-10-15 | 태그 수집 제한 문제 (200개) | ❌ 10개 중 9개만 수집 |
+| 2025-10-15 | 태그 수집 제한 제거 | ✅ 모든 태그 수집 가능 |
+| 2025-10-15 | context.expect_page() 사용 | ❌ "상품이 존재하지 않습니다" 에러 |
+| 2025-10-15 | 단순 클릭 + 새 탭 찾기 | ✅ 에러 페이지 발생 안함 |
+| 2025-10-15 | 점진적 스크롤 (10단계) | ✅ 40% 위치에서 태그 발견 |
+| 2025-10-15 | 광고 상품 건너뛰기 | ✅ 30번째부터 시작 |
 
 ---
 
@@ -514,6 +520,472 @@ if len(all_pages) > 1:
 5. 수동으로 캡차 해결 후 진행
 
 **현재 상태**: 카테고리 진입 방법 연구 필요
+
+---
+
+## 📂 카테고리 구조 수집 방법 (2025-09-27)
+
+### 카테고리 메뉴 HTML 구조 분석
+
+**스크린샷 분석 결과** (2025-09-27 00:43~00:46):
+1. **카테고리 버튼 클릭으로 메뉴 열기**
+   - Selector: `#gnb-gnb > div._gnb_header_area_nfFfz > div > div._gnbContent_gnb_content_JUwjU > div._gnbContent_button_area_FRBmE > div:nth-child(1) > button`
+   - 카테고리 버튼 클릭 시 왼쪽에 카테고리 메뉴 펼쳐짐
+
+2. **메인 카테고리 구조**
+   - 클래스: `_categoryLayer_category_layer_1JUQ0`
+   - 메인 카테고리 링크: `_categoryLayer_link_8hzu`
+   - 각 카테고리별 고유 ID 존재 (예: 10000109 = 패션잡화)
+
+3. **서브카테고리 표시 방법**
+   - **중요**: 메인 카테고리에 마우스 호버 시 오른쪽에 서브카테고리 패널 나타남
+   - 서브카테고리 텍스트: `span._categoryLayer_text_XOd4h`
+   - "더보기" 링크: `_categoryLayer_more_link_3-8KG`
+
+### 발견된 카테고리 구조 (실제 데이터)
+
+**패션잡화 (ID: 10000109)**
+```
+- 명품가방/지갑
+- 여성가방
+- 남성가방
+- 여행용가방/소품
+- 주얼리
+- 모자
+- 양말
+- 벨트
+- 패션소품
+- 안경
+- 시계
+- 선글라스
+- 지갑
+- 더보기 >
+```
+
+**신발 (ID: 10000110)**
+```
+- 여성용
+- 남성용
+- 운동화/스니커즈
+- 여성단화
+- 힐/펌프스
+- 남성구두
+- 슬리퍼/샌들
+- 부츠/워커
+- 홈/실내화
+- 아쿠아슈즈
+- 가능화
+- 모카신/털신
+- 신발용품
+- 더보기 >
+```
+
+### ⚠️ 발견된 문제점
+
+1. **서브카테고리 데이터 중복 문제**
+   - 화장품/미용 카테고리 호버 시 신발 카테고리의 서브메뉴가 표시됨
+   - 원인: 호버 이벤트 처리가 제대로 되지 않아 이전 카테고리 데이터 남아있음
+   - 해결: 각 메인 카테고리 호버 후 충분한 대기 시간 필요
+
+2. **카테고리 URL 구조**
+   ```
+   메인: https://search.shopping.naver.com/ns/category/10000109
+   서브: https://search.shopping.naver.com/ns/category/10000109/서브ID
+   ```
+
+### ✅ 올바른 카테고리 수집 방법
+
+1. **카테고리 버튼 클릭**
+   ```python
+   category_button = await page.wait_for_selector(
+       '#gnb-gnb > div._gnb_header_area_nfFfz > div > div._gnbContent_gnb_content_JUwjU > div._gnbContent_button_area_FRBmE > div:nth-child(1) > button'
+   )
+   await category_button.click()
+   await asyncio.sleep(2)  # 메뉴 열리기 대기
+   ```
+
+2. **메인 카테고리 수집**
+   ```python
+   main_categories = await page.query_selector_all('._categoryLayer_link_8hzu')
+   ```
+
+3. **각 메인 카테고리별 서브카테고리 수집**
+   ```python
+   for main_cat in main_categories:
+       await main_cat.hover()  # 호버로 서브메뉴 표시
+       await asyncio.sleep(1)  # 서브메뉴 로딩 대기
+
+       # 서브카테고리 수집
+       sub_categories = await page.query_selector_all('span._categoryLayer_text_XOd4h')
+   ```
+
+4. **데이터 정리 시 주의사항**
+   - 메인 카테고리가 서브카테고리에 중복 포함되지 않도록 필터링
+   - "더보기" 링크는 제외
+   - 각 카테고리의 고유 ID 저장
+
+---
+
+## 📚 카테고리 셀렉터 상세 분석 (2025-09-27)
+
+### 카테고리 셀렉터 파일 구조
+**파일**: `/docs/selectors/카테고리_copy selector.txt`
+
+**분석된 4가지 항목**:
+1. 카테고리 버튼 셀렉터
+2. 대분류 카테고리 (남성의류)
+3. 중분류 카테고리 (편집샵)
+4. 소분류 카테고리 (항공점퍼/블루종)
+
+### 🔑 안정적인 셀렉터 우선순위
+
+| 우선순위 | 셀렉터 타입 | 예시 | 안정성 |
+|---------|------------|------|---------|
+| 1 | ID 기반 | `#cat_layer_item_10000108` | ⭐⭐⭐⭐⭐ |
+| 2 | data-id 속성 | `[data-id="10000108"]` | ⭐⭐⭐⭐ |
+| 3 | data-name 속성 | `[data-name="남성의류"]` | ⭐⭐⭐ |
+| 4 | CSS 셀렉터 | `._categoryLayer_link_Bhzgu` | ⭐⭐ |
+| 5 | 중첩 셀렉터 | `#gnb-gnb > div > div...` | ⭐ |
+
+### 📊 카테고리 데이터 속성 분석
+
+**핵심 data 속성**:
+- `data-id`: 카테고리 고유 코드 (예: 10000108)
+- `data-name`: 카테고리 이름 (예: "남성의류")
+- `data-leaf`: 하위 카테고리 존재 여부
+  - `"false"`: 하위 카테고리 있음 → 클릭 시 서브메뉴 펼쳐짐
+  - `"true"`: 최종 카테고리 → 상품 페이지로 이동
+- `data-order`: 정렬 순서 (0부터 시작)
+- `data-type`: 카테고리 타입 (DEFAULT, ETC)
+
+**동적 상태 관리 속성**:
+- `aria-expanded`: 메뉴 펼침 상태 ("true"/"false")
+- `aria-haspopup`: 서브메뉴 존재 여부
+- `aria-current`: 현재 선택된 페이지 ("page")
+- `class`의 `_categoryLayer_active_hYR1F`: 활성화 상태
+
+### 🎯 카테고리 계층 구조 파악
+
+```
+대분류 (data-leaf="false")
+├── 중분류 (data-leaf 혼재)
+│   ├── 소분류 (data-leaf="true")
+│   └── 소분류 (data-leaf="true")
+└── 특수 카테고리 (ETC 타입)
+```
+
+**예시 - 남성의류 구조**:
+```
+남성의류 (10000108, leaf=false)
+├── 편집샵 (10007611, leaf=true, type=ETC)
+├── 아우터 (leaf=false)
+│   └── 항공점퍼/블루종 (10000595, leaf=true)
+└── 기타 중분류...
+```
+
+### ✅ 크롤링 최적화 전략
+
+**1. 셀렉터 폴백 전략**:
+```python
+async def find_category(page, category_id):
+    # 1차: ID 셀렉터 (가장 빠르고 안정적)
+    element = await page.query_selector(f'#cat_layer_item_{category_id}')
+
+    # 2차: data-id 속성
+    if not element:
+        element = await page.query_selector(f'[data-id="{category_id}"]')
+
+    # 3차: data-name 속성
+    if not element:
+        element = await page.query_selector(f'[data-name="{category_name}"]')
+
+    return element
+```
+
+**2. 동적 대기 전략**:
+```python
+# aria-expanded 속성 변경 감지
+await page.wait_for_selector('[aria-expanded="true"]', timeout=5000)
+
+# 서브메뉴 로딩 대기
+if element.get_attribute('data-leaf') == 'false':
+    await element.click()
+    await page.wait_for_selector('.서브메뉴_클래스', state='visible')
+```
+
+**3. 경로 추적**:
+- `data-shp-contents-id` 속성 활용
+- 예: "남성의류>아우터>항공점퍼/블루종"으로 현재 위치 파악
+
+**4. 카테고리 코드 매핑 테이블**:
+```python
+CATEGORY_MAP = {
+    '남성의류': 10000108,
+    '편집샵': 10007611,
+    '항공점퍼/블루종': 10000595,
+    # ... 전체 카테고리 매핑
+}
+```
+
+### ⚠️ 주의사항
+
+1. **CSS 클래스 의존 최소화**: 클래스명은 빌드 시 변경될 수 있음
+2. **중첩 셀렉터 피하기**: DOM 구조 변경에 취약
+3. **data-leaf 확인 필수**: 클릭 전 하위 카테고리 존재 여부 확인
+4. **ETC 타입 주의**: 특수 카테고리는 일반 카테고리와 다른 동작 가능
+
+---
+
+## 🎯 여성의류 검색태그 수집 프로젝트 (2025-10-15)
+
+### 프로젝트 목표
+네이버 쇼핑 → 여성의류 카테고리에서 "검색태그"(관련 태그)가 있는 상품만 수집
+
+**테스트 파일**: `/tests/test_womens_manual_captcha.py`
+
+---
+
+### ✅ 성공한 접근 방법
+
+#### 1. 캡차 회피 전략
+```python
+# 1. 네이버 메인 접속
+await page.goto('https://www.naver.com')
+
+# 2. 쇼핑 클릭
+shopping_selector = '#shortcutArea > ul > li:nth-child(4) > a'
+await shopping_link.click()
+
+# 3. 새 탭으로 자동 전환
+all_pages = context.pages
+page = all_pages[-1]
+
+# 4. 캡차 발생 시 수동 해결 (25초 대기)
+if await page.query_selector('text="보안 확인을 완료해 주세요"'):
+    await wait_for_captcha_solve(page)
+
+# 5. 카테고리 → 여성의류 클릭
+womens = await page.wait_for_selector('a[data-name="여성의류"]')
+await womens.click()
+```
+
+**핵심 포인트**:
+- ✅ Firefox 브라우저 사용
+- ✅ headless=False (브라우저 창 보이기)
+- ✅ 전체화면 설정 (`no_viewport=True`)
+- ✅ 수동 캡차 해결 (25초 대기 시간 제공)
+
+---
+
+#### 2. 광고 상품 건너뛰기
+```python
+# 30번째 상품부터 시작 (1~29번째는 광고)
+idx = 29  # 0-based index
+```
+
+**발견 사항**:
+- 여성의류 카테고리 상품 리스트에서 처음 1~29개는 광고
+- 실제 일반 상품은 30번째부터 시작
+
+---
+
+### ❌ 실패 1: 태그 수집 제한 문제 (2025-10-15)
+
+#### 문제 상황
+- **증상**: 10개 태그 중 9개만 수집됨 (#여성운동복 누락)
+- **기대**: `#빅사이즈트레이닝세트 #여자트레이닝세트 ... #여성운동복` (10개)
+- **실제**: 9개만 수집되고 마지막 태그 누락
+
+#### 원인 분석
+```python
+# ❌ 문제 코드
+for link in all_links[:200]:  # 최대 200개 링크만 확인
+    text = await link.inner_text()
+    if text and text.strip().startswith('#'):
+        tags.append(text)
+```
+
+- 페이지에 200개 이상의 링크가 있을 때 10번째 태그가 200번 이후에 위치
+- 임의로 설정한 200개 제한이 태그 누락 원인
+
+#### ✅ 해결 방법
+```python
+# ✅ 해결 코드 - 제한 제거
+for idx, link in enumerate(all_links):  # 모든 링크 확인
+    text = await link.inner_text()
+    if text and text.strip().startswith('#'):
+        clean_tag = text.strip().replace('#', '').strip()
+        if 1 < len(clean_tag) < 30 and clean_tag not in tags:
+            tags.append(clean_tag)
+```
+
+**결과**: 모든 태그 수집 가능 (10개 전부)
+
+---
+
+### ❌ 실패 2: "상품이 존재하지 않습니다" 에러 (2025-10-15)
+
+#### 문제 상황
+- **증상**: 상품 클릭 후 "상품이 존재하지 않습니다" 에러 페이지 발생
+- **중요**: 상품은 **실제로 존재함!** (사용자가 눈으로 확인)
+- **원인**: 코드가 뭔가 잘못해서 에러 페이지로 이동시킴
+
+#### 실패한 접근 (잘못된 해결책)
+```python
+# ❌ 에러 페이지 감지 후 건너뛰기 - 근본 원인 미해결
+error_texts = ['text="상품이 존재하지 않습니다"', ...]
+if await detail_page.query_selector(error_texts[0]):
+    await detail_page.close()  # 건너뛰기
+    continue
+```
+
+**문제점**: 에러가 발생하는 것 자체가 문제인데, 에러를 "처리"만 하고 넘어가려 함
+
+#### 근본 원인 발견
+```python
+# ❌ 문제의 코드
+async with context.expect_page() as new_page_info:
+    await product_elem.click()
+
+detail_page = await new_page_info.value  # 잘못된 페이지 캐치!
+```
+
+**원인 분석**:
+- `context.expect_page()`가 의도한 상품 페이지가 아닌 엉뚱한 페이지를 캐치
+- 또는 페이지 전환 과정을 방해하여 잘못된 URL로 이동
+- 결과적으로 "상품이 존재하지 않습니다" 에러 페이지로 이동
+
+#### ✅ 해결 방법 (단순화)
+```python
+# ✅ 단순하고 안정적인 방식
+# 1. 상품 클릭
+await product_elem.click()
+await asyncio.sleep(3)  # 새 탭이 열릴 때까지 대기
+
+# 2. 새 탭 찾기
+all_pages = context.pages
+if len(all_pages) <= 1:
+    continue  # 탭이 안 열렸으면 다음 상품으로
+
+# 3. 가장 최근 탭 선택
+detail_page = all_pages[-1]
+
+# 4. 페이지 로드 대기
+await detail_page.wait_for_load_state('domcontentloaded')
+await asyncio.sleep(1)
+```
+
+**핵심 교훈**:
+- ❌ `context.expect_page()` 사용 금지 (복잡하고 불안정)
+- ✅ 단순한 클릭 → 대기 → 새 탭 찾기 방식이 안정적
+- ✅ **에러를 "감지"하지 말고, 에러가 "발생하지 않게" 해야 함!**
+
+---
+
+### ✅ 검색태그 찾기 전략 (2025-10-15)
+
+#### 점진적 스크롤 방식
+```python
+# 페이지를 10단계로 나눠서 천천히 스크롤
+for scroll_step in range(1, 11):
+    scroll_position = scroll_step * 10  # 10%, 20%, 30%... 100%
+    await page.evaluate(
+        f'window.scrollTo(0, document.body.scrollHeight * {scroll_position / 100})'
+    )
+    await asyncio.sleep(2)  # DOM 로드 대기
+
+    # 각 단계에서 태그 확인
+    has_tags = await check_search_tags(page)
+    if has_tags:
+        print(f"✓ {scroll_position}% 위치에서 검색태그 발견!")
+        break
+```
+
+**발견 사항**:
+- 검색태그("관련 태그")는 보통 **40% 스크롤 위치**에서 발견됨
+- 너무 빠르게 스크롤하면 DOM이 로딩되기 전에 지나쳐버림
+- 각 단계마다 2초 대기하여 안정적으로 태그 감지
+
+#### 검색태그 식별 방법
+```python
+# "관련 태그" 섹션의 해시태그 찾기
+all_links = await page.query_selector_all('a')
+
+for link in all_links:
+    text = await link.inner_text()
+    if text and text.strip().startswith('#'):
+        # #빅사이즈트레이닝세트 형태의 태그 발견
+        clean_tag = text.strip().replace('#', '').strip()
+        tags.append(clean_tag)
+```
+
+**검색태그 형식**:
+- 텍스트가 `#`으로 시작
+- 링크(`<a>` 태그) 형태
+- "관련 태그" 섹션에 위치
+- 예: `#잠옷바지`, `#체크잠옷`, `#커플잠옷`
+
+---
+
+### 📊 성공 데이터 예시
+
+**수집된 상품 정보** (`data/womens_products_20251015_115737.json`):
+```json
+{
+  "category": "여성의류",
+  "total_count": 1,
+  "products": [{
+    "product_url": "https://search.shopping.naver.com/...",
+    "detail_page_info": {
+      "search_tags": [
+        "빅사이즈트레이닝세트",
+        "여자트레이닝세트",
+        "여성운동복세트",
+        "여성트레이닝세트",
+        "여성츄리닝세트",
+        "트레이닝세트",
+        "후드트레이닝세트",
+        "기모트레이닝세트",
+        "여성트레이닝복세트",
+        "여성운동복"
+      ]
+    }
+  }]
+}
+```
+
+---
+
+### 🔑 핵심 교훈 정리
+
+| 문제 | 잘못된 접근 | 올바른 접근 |
+|------|------------|------------|
+| 태그 누락 | 임의로 200개 제한 | 모든 링크 확인 |
+| 에러 페이지 | 에러 감지 후 건너뛰기 | 에러가 발생하지 않게 수정 |
+| 페이지 전환 | `context.expect_page()` 사용 | 단순한 클릭 + 대기 + 새 탭 찾기 |
+| 태그 찾기 | 한 번에 하단으로 스크롤 | 10단계 점진적 스크롤 (각 2초 대기) |
+| 광고 상품 | 처음부터 수집 | 30번째 상품부터 시작 |
+
+---
+
+### ⚠️ 절대 규칙
+
+1. **에러를 감지하지 말고 예방하라**
+   - ❌ 에러 페이지 감지 → 건너뛰기
+   - ✅ 근본 원인 제거 → 에러 발생 자체를 막기
+
+2. **단순함이 안정성이다**
+   - ❌ 복잡한 `context.expect_page()` API
+   - ✅ 간단한 클릭 + 대기 + 탭 찾기
+
+3. **임의의 제한을 두지 말라**
+   - ❌ `all_links[:200]` - 200개 제한
+   - ✅ `all_links` - 모든 링크 확인
+
+4. **충분한 대기 시간 확보**
+   - 스크롤 후 DOM 로딩: 2초
+   - 새 탭 열림: 3초
+   - 페이지 전환: 1~2초
 
 ---
 

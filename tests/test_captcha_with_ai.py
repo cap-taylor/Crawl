@@ -1,212 +1,281 @@
 """
-캡차 자동 해결 - AI가 스크린샷 분석
+네이버 캡차 해결 - AI/OCR 통합 버전
+실제로 사용 가능한 캡차 해결 방법들
 """
-
 import asyncio
-from playwright.async_api import async_playwright
-import os
+import base64
 from datetime import datetime
+from playwright.async_api import async_playwright
+import re
 
-async def analyze_captcha_screenshot(screenshot_path):
-    """
-    스크린샷을 분석해서 답을 찾는 함수
-    실제로는 여기서 OCR이나 AI 서비스를 사용해야 함
-    """
-    print(f"\n🔍 스크린샷 분석 중: {screenshot_path}")
+class SmartCaptchaSolver:
+    def __init__(self, headless=False):
+        self.headless = headless
+        self.captcha_attempts = 0
+        self.max_attempts = 3
 
-    # 여기서 실제 이미지 분석이 필요
-    # 예: OCR로 영수증 텍스트 읽기
-    # 예: AI 서비스로 이미지 분석
+    async def analyze_captcha_type(self, page):
+        """캡차 타입 분석"""
+        print("\n[분석] 캡차 타입 확인 중...")
 
-    # 임시로 사용자 입력 받기 (실제 구현시 자동화)
-    print("\n" + "=" * 50)
-    print("🖼️ 캡차 스크린샷이 저장되었습니다.")
-    print(f"📁 파일 위치: {screenshot_path}")
-    print("\n질문과 영수증을 보고 답을 입력하세요:")
-    print("예시:")
-    print("  - 아이템 개수: 숫자 입력 (예: 16)")
-    print("  - 무게(kg): 소수점 입력 (예: 2.46)")
-    print("  - 가격: 숫자 입력 (예: 50000)")
-    print("=" * 50)
+        # 영수증 문제
+        if await page.query_selector('text="영수증에서 구매한 물건은 총 몇 개"'):
+            return "receipt_count"
 
-    # 자동 분석 시도 (패턴 매칭)
-    # 실제로는 OCR 결과를 분석
-    answer = "16"  # 기본값
+        # 숫자 계산 문제
+        if await page.query_selector('text="더한 값"') or await page.query_selector('text="뺀 값"'):
+            return "math_problem"
 
-    return answer
+        # 일반 문자 입력
+        if await page.query_selector('text="자동입력 방지문자"'):
+            return "text_captcha"
 
-async def test_captcha_with_ai():
-    print("=" * 50)
-    print("캡차 자동 해결 테스트 (AI 분석)")
-    print("=" * 50)
+        return "unknown"
 
-    async with async_playwright() as p:
-        browser = await p.firefox.launch(
-            headless=False,
-            slow_mo=500,
-            args=['--kiosk']
-        )
-        context = await browser.new_context(
-            locale='ko-KR',
-            timezone_id='Asia/Seoul',
-            viewport={'width': 1920, 'height': 1080}
-        )
-        page = await context.new_page()
+    async def solve_captcha_with_ocr(self, page):
+        """OCR을 사용한 캡차 해결"""
+        print("\n[OCR] 캡차 이미지 분석 중...")
 
+        # 1. 캡차 이미지 캡처
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        captcha_path = f'data/captcha_{timestamp}.png'
+
+        # 캡차 이미지 요소 찾기
+        captcha_img = await page.query_selector('div[class*="captcha"] img, img[alt*="보안"]')
+        if captcha_img:
+            await captcha_img.screenshot(path=captcha_path)
+            print(f"📸 캡차 이미지 저장: {captcha_path}")
+
+            # 2. OCR 처리 옵션들
+            print("\n[해결 방법 선택]")
+            print("1. Tesseract OCR (로컬)")
+            print("2. Google Cloud Vision API")
+            print("3. 2Captcha 서비스")
+            print("4. Anti-Captcha 서비스")
+            print("5. 수동 입력")
+
+            # 여기서는 각 방법의 구현 예시를 보여줌
+            solution = await self.use_ocr_service(captcha_path)
+            return solution
+
+        return None
+
+    async def use_ocr_service(self, image_path):
+        """실제 OCR 서비스 호출 (예시)"""
+
+        # 방법 1: Tesseract OCR (무료, 로컬)
         try:
-            # 1. 네이버 메인
-            print("1️⃣ 네이버 메인 접속...")
-            await page.goto('https://www.naver.com')
-            await page.wait_for_load_state('networkidle')
-            await asyncio.sleep(3)
+            import pytesseract
+            from PIL import Image
 
-            # 2. 쇼핑 클릭
-            print("2️⃣ 쇼핑 클릭...")
-            shopping_link = await page.wait_for_selector('#shortcutArea > ul > li:nth-child(4) > a')
-            await shopping_link.click()
-            await asyncio.sleep(3)
+            image = Image.open(image_path)
+            text = pytesseract.image_to_string(image, lang='kor+eng')
+            print(f"[Tesseract] 인식된 텍스트: {text}")
+            return text.strip()
+        except ImportError:
+            print("[경고] pytesseract 미설치 - pip install pytesseract pillow")
+        except Exception as e:
+            print(f"[Tesseract 오류] {str(e)}")
 
-            # 3. 새 탭 전환
-            if len(context.pages) > 1:
-                page = context.pages[-1]
-                await page.wait_for_load_state('networkidle')
-                print("✅ 쇼핑 탭 전환 완료")
+        # 방법 2: 2Captcha API (유료)
+        """
+        from twocaptcha import TwoCaptcha
+        solver = TwoCaptcha('YOUR_API_KEY')
+        result = solver.normal(image_path)
+        return result['code']
+        """
 
-            await asyncio.sleep(3)
+        # 방법 3: Anti-Captcha (유료)
+        """
+        from anticaptchaofficial.imagecaptcha import ImageCaptcha
+        solver = ImageCaptcha('YOUR_API_KEY')
+        with open(image_path, 'rb') as f:
+            captcha_text = solver.solve_and_return_solution(base64.b64encode(f.read()).decode())
+        return captcha_text
+        """
 
-            # 4. 카테고리 메뉴 열기
-            print("3️⃣ 카테고리 메뉴 열기...")
-            category_btn = await page.wait_for_selector('text=카테고리', timeout=5000)
-            if category_btn:
-                await category_btn.click()
-                await asyncio.sleep(3)
-                print("✅ 카테고리 메뉴 열림")
+        # 방법 4: Google Cloud Vision (유료, 정확도 높음)
+        """
+        from google.cloud import vision
+        client = vision.ImageAnnotatorClient()
+        with open(image_path, 'rb') as f:
+            content = f.read()
+        image = vision.Image(content=content)
+        response = client.text_detection(image=image)
+        return response.text_annotations[0].description if response.text_annotations else None
+        """
 
-            # 5. 남성의류 클릭
-            print("4️⃣ 남성의류 클릭...")
-            mens_clothing = await page.wait_for_selector('text=남성의류', timeout=5000)
-            if mens_clothing:
-                await mens_clothing.click()
-                await asyncio.sleep(5)
+        return None
 
-            # 6. 캡차 확인
-            print("5️⃣ 캡차 확인 중...")
-            await asyncio.sleep(3)
+    async def solve_receipt_problem(self, page):
+        """영수증 문제 해결"""
+        print("[영수증] 이미지 분석 중...")
 
-            # 스크린샷 저장
-            temp_screenshot = f'/tmp/captcha_{datetime.now().strftime("%Y%m%d_%H%M%S")}.png'
-            await page.screenshot(path=temp_screenshot)
-            print(f"📸 스크린샷 저장: {temp_screenshot}")
+        # 영수증 이미지를 캡처하고 분석
+        # 실제로는 CV 라이브러리로 테이블 인식이 필요
 
-            # 캡차 여부 확인
-            captcha_indicators = [
-                await page.query_selector('text=security verification'),
-                await page.query_selector('input[placeholder*="Answer"]'),
-                await page.query_selector('text=확인'),
-                await page.query_selector('button:has-text("확인")')
-            ]
+        # OpenCV를 사용한 예시
+        """
+        import cv2
+        import numpy as np
 
-            if any(captcha_indicators):
-                print("\n🔐 캡차 감지!")
+        # 이미지에서 테이블/숫자 검출
+        # 수량 컬럼의 숫자들을 합산
+        """
 
-                # AI로 스크린샷 분석
-                answer = await analyze_captcha_screenshot(temp_screenshot)
-                print(f"\n💡 분석 결과 답: {answer}")
+        # 임시: 사용자 입력 요청
+        print("\n⚠️ 영수증의 물건 개수를 세어서 입력해주세요")
+        print("(자동화하려면 OpenCV + OCR 조합이 필요합니다)")
 
-                # 답 입력
-                print("✏️ 답 입력 중...")
-                answer_input = await page.query_selector('input[placeholder*="Answer"]')
-                if not answer_input:
-                    answer_input = await page.query_selector('input[type="text"]')
+        return None
 
-                if answer_input:
-                    await answer_input.click()
-                    await answer_input.fill("")
-                    await answer_input.type(answer, delay=100)
-                    print(f"✅ 답 입력 완료: {answer}")
+    async def manual_solve(self, page):
+        """수동 캡차 해결 대기"""
+        print("\n" + "="*60)
+        print("⚠️ 수동 캡차 해결 모드")
+        print("="*60)
+        print("1. 브라우저에서 캡차를 확인하세요")
+        print("2. 답을 입력하세요")
+        print("3. 확인 버튼을 클릭하세요")
+        print("4. 완료되면 여기서 엔터를 누르세요...")
+        print("="*60)
 
-                    # Confirm 버튼 클릭
-                    confirm_btn = await page.query_selector('button:has-text("확인")')
-                    if not confirm_btn:
-                        confirm_btn = await page.query_selector('button:has-text("Confirm")')
+        # 실제로는 input()이 아닌 다른 방법 사용
+        # 예: 파일 워처, 웹소켓, 또는 주기적 체크
 
-                    if confirm_btn:
-                        await confirm_btn.click()
-                        print("✅ 확인 버튼 클릭!")
-
-                        # 결과 대기
-                        await asyncio.sleep(5)
-
-                        # 성공 확인
-                        current_url = page.url
-                        if "/category/" in current_url:
-                            print("\n🎉 캡차 해결 성공!")
-                            print(f"📍 현재 URL: {current_url}")
-
-                            # 임시 스크린샷 삭제
-                            if os.path.exists(temp_screenshot):
-                                os.remove(temp_screenshot)
-                                print(f"🗑️ 임시 스크린샷 삭제")
-
-                            # 상품 확인
-                            products = await page.query_selector_all('[class*="product"]')
-                            print(f"👔 남성의류 상품 {len(products)}개 발견")
-
-                            return True
-                        else:
-                            print("⚠️ 캡차 해결 실패")
-
-                            # 다른 답 시도 리스트
-                            alternative_answers = ["15", "17", "20", "10", "5", "1", "2.5", "3"]
-
-                            for alt_answer in alternative_answers:
-                                print(f"\n🔄 다른 답 시도: {alt_answer}")
-
-                                answer_input = await page.query_selector('input[type="text"]')
-                                if answer_input:
-                                    await answer_input.click()
-                                    await answer_input.fill("")
-                                    await answer_input.type(alt_answer, delay=100)
-
-                                    confirm_btn = await page.query_selector('button:has-text("확인")')
-                                    if confirm_btn:
-                                        await confirm_btn.click()
-                                        await asyncio.sleep(3)
-
-                                        if "/category/" in page.url:
-                                            print(f"✅ 성공! 정답은 {alt_answer}였습니다!")
-
-                                            # 임시 스크린샷 삭제
-                                            if os.path.exists(temp_screenshot):
-                                                os.remove(temp_screenshot)
-
-                                            return True
-
-                            print("❌ 모든 시도 실패")
-                            return False
-            else:
-                print("✅ 캡차 없이 접속 성공!")
-
-                # 임시 스크린샷 삭제
-                if os.path.exists(temp_screenshot):
-                    os.remove(temp_screenshot)
-                    print(f"🗑️ 임시 스크린샷 삭제")
-
+        # 캡차가 사라질 때까지 대기
+        max_wait = 60  # 60초 대기
+        for i in range(max_wait):
+            await asyncio.sleep(1)
+            if not await page.query_selector('text="보안 확인을 완료해 주세요"'):
+                print("✅ 캡차 해결 확인!")
                 return True
 
-        except Exception as e:
-            print(f"❌ 오류 발생: {e}")
+            if i % 10 == 0:
+                print(f"대기 중... ({i}/{max_wait}초)")
 
-            # 에러 시에도 임시 파일 삭제
-            if 'temp_screenshot' in locals() and os.path.exists(temp_screenshot):
-                os.remove(temp_screenshot)
+        return False
 
-            return False
-        finally:
-            print("\n브라우저를 30초간 유지합니다...")
-            await asyncio.sleep(30)
-            await browser.close()
-            print("🔚 브라우저 종료")
+    async def smart_captcha_bypass(self):
+        """스마트 캡차 우회/해결"""
+        async with async_playwright() as p:
+            try:
+                print("[시작] 캡차 해결 테스트...")
+                browser = await p.firefox.launch(headless=self.headless)
+
+                context = await browser.new_context(
+                    viewport={'width': 1920, 'height': 1080},
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0"
+                )
+
+                page = await context.new_page()
+
+                # 전략 1: 프록시/VPN 사용
+                """
+                context = await browser.new_context(
+                    proxy={
+                        "server": "http://proxy-server:port",
+                        "username": "user",
+                        "password": "pass"
+                    }
+                )
+                """
+
+                # 전략 2: 쿠키 사용 (이미 인증된 세션)
+                """
+                cookies = load_cookies_from_file()
+                await context.add_cookies(cookies)
+                """
+
+                # 전략 3: User-Agent 로테이션
+                user_agents = [
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
+                ]
+
+                # 일반적인 접속 시도
+                await page.goto('https://www.naver.com')
+                await asyncio.sleep(2)
+
+                # 쇼핑 이동
+                shopping = await page.wait_for_selector('#shortcutArea > ul > li:nth-child(4) > a')
+                await shopping.click()
+                await asyncio.sleep(3)
+
+                # 새 탭 처리
+                if len(context.pages) > 1:
+                    page = context.pages[-1]
+
+                # 캡차 확인
+                if await page.query_selector('text="보안 확인을 완료해 주세요"'):
+                    print("\n[캡차 감지!]")
+
+                    # 캡차 타입 확인
+                    captcha_type = await self.analyze_captcha_type(page)
+                    print(f"캡차 타입: {captcha_type}")
+
+                    # 해결 시도
+                    solution = await self.solve_captcha_with_ocr(page)
+
+                    if not solution:
+                        # OCR 실패시 수동 해결
+                        await self.manual_solve(page)
+
+                # 카테고리 이동
+                category_btn = await page.wait_for_selector('button:has-text("카테고리")')
+                await category_btn.click()
+                await asyncio.sleep(2)
+
+                womens = await page.wait_for_selector('a[data-name="여성의류"]')
+                await womens.click()
+                await asyncio.sleep(3)
+
+                # 또 캡차 확인
+                if await page.query_selector('text="보안 확인을 완료해 주세요"'):
+                    await self.manual_solve(page)
+
+                # 상품 확인
+                products = await page.query_selector_all('a[href*="/products/"]')
+                if products:
+                    print(f"\n✅ {len(products)}개 상품 발견!")
+
+                    # 첫 번째 상품 정보
+                    first = products[0]
+                    container = await first.evaluate_handle('el => el.closest("li, div[class*=\'product\']")')
+
+                    # 상품명
+                    title = await container.query_selector('[class*="title"]')
+                    if title:
+                        name = await title.inner_text()
+                        print(f"첫 번째 상품: {name[:50]}...")
+
+                await browser.close()
+                return True
+
+            except Exception as e:
+                print(f"[오류] {str(e)}")
+                return False
+
 
 if __name__ == "__main__":
-    asyncio.run(test_captcha_with_ai())
+    async def main():
+        print("="*60)
+        print("스마트 캡차 해결 시스템")
+        print("="*60)
+        print("\n사용 가능한 방법:")
+        print("1. OCR (Tesseract, Google Vision)")
+        print("2. 캡차 해결 서비스 (2Captcha, Anti-Captcha)")
+        print("3. 수동 해결 대기")
+        print("4. 프록시/쿠키 우회")
+        print("="*60)
+
+        solver = SmartCaptchaSolver(headless=False)
+        success = await solver.smart_captcha_bypass()
+
+        if success:
+            print("\n✅ 성공!")
+        else:
+            print("\n❌ 실패")
+
+    asyncio.run(main())

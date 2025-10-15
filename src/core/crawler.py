@@ -8,9 +8,10 @@ from src.utils.captcha_handler import CaptchaHandler
 import json
 
 class CategoryCrawler:
-    def __init__(self, gui=None, headless=False):
+    def __init__(self, gui=None, headless=False, selected_categories=None):
         self.gui = gui
         self.headless = headless
+        self.selected_categories = selected_categories or []
         self.categories = []
         self.category_count = 0
         self.is_running = True
@@ -33,12 +34,15 @@ class CategoryCrawler:
 
     def crawl_categories_only(self):
         """카테고리만 수집"""
-        asyncio.run(self._crawl_categories())
+        # 완전한 카테고리 수집기 사용
+        from src.utils.category_collector_complete import CompleteCategoryCollector
+        collector = CompleteCategoryCollector(gui=self.gui, headless=self.headless)
+        asyncio.run(collector.collect_all_categories())
 
     def crawl_all(self):
         """카테고리 + 상품 수집"""
         # TODO: 상품 수집 로직 추가
-        asyncio.run(self._crawl_categories())
+        self.crawl_categories_only()
 
     async def _crawl_categories(self):
         """비동기 카테고리 크롤링"""
@@ -54,7 +58,7 @@ class CategoryCrawler:
                     self.log("Firefox 브라우저로 시도합니다...", 'INFO')
                     browser = await p.firefox.launch(
                         headless=self.headless,
-                        args=['--start-maximized', '--start-fullscreen']
+                        args=['--kiosk']  # Firefox는 --kiosk 옵션으로 전체화면
                     )
                     using_firefox = True
                 except:
@@ -205,7 +209,7 @@ class CategoryCrawler:
                 await self.random_wait()
 
                 # 캡차 페이지 처리
-                is_captcha = await self.captcha_solver.handle_captcha_page(page)
+                is_captcha = await self.captcha_handler.handle_captcha_page(page)
                 if is_captcha:
                     self.log("캡차 해결 시도 중...", 'INFO')
                     # 캡차 해결 후 다시 로드 대기
@@ -244,8 +248,25 @@ class CategoryCrawler:
     async def collect_categories(self, page):
         """카테고리 정보 수집"""
         try:
+            # 선택된 카테고리가 있으면 해당 카테고리만 수집
+            if self.selected_categories:
+                self.log(f"선택된 카테고리 {len(self.selected_categories)}개를 수집합니다: {', '.join(self.selected_categories)}", 'INFO')
+                # TODO: 선택된 카테고리만 수집하는 로직 구현
+                # 현재는 임시로 선택된 카테고리 정보를 반환
+                self.categories = [{'name': cat, 'url': '#'} for cat in self.selected_categories]
+                self.category_count = len(self.categories)
+
+                # 상태 업데이트
+                for cat in self.selected_categories:
+                    self.update_status(category_name=cat)
+                    await self.random_wait()
+
+                # 결과 저장
+                await self.save_categories()
+                return
+
             # 카테고리 버튼 찾기 및 클릭
-            self.log("카테고리 메뉴를 찾고 있습니다...", 'INFO')
+            self.log("전체 카테고리를 수집합니다...", 'INFO')
 
             # 여러 가능한 셀렉터 시도
             category_selectors = [

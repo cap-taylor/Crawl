@@ -5,16 +5,34 @@
 ### 실행 파일 경로
 - **PowerShell 스크립트**: `run_crawler.ps1`
   - 위치: 프로젝트 루트 (절대 이동 금지)
-  - 경로: `D:\#MyProjects#Crawl\#run_crawler.ps1`
-  - Windows 바로가기에서 직접 참조 중
+  - WSL 경로: `/home/dino/MyProjects/Crawl/run_crawler.ps1`
+  - Windows 경로: `\\wsl.localhost\Ubuntu-22.04\home\dino\MyProjects\Crawl\run_crawler.ps1`
 
 ### 실행 방법
-1. **바탕화면 바로가기**: 더블클릭 → PowerShell 7 자동 실행
-2. **PowerShell 직접 실행**: `pwsh -ExecutionPolicy Bypass -File D:\MyProjects\Crawl\run_crawler.ps1`
-3. **WSL 터미널**: `python3 main.py`
+1. **WSL 터미널** (권장): `python3 main.py`
+2. **PowerShell**: 프로젝트 루트에서 `pwsh -ExecutionPolicy Bypass -File ./run_crawler.ps1`
+3. **직접 실행**: `python3 /home/dino/MyProjects/Crawl/main.py`
 
-## 📁 프로젝트 구조 (고정)
+## 📁 프로젝트 구조 (절대 준수!)
 
+### ⚠️ 중요: 루트 디렉토리 규칙
+**루트(`/home/dino/MyProjects/Crawl/`)에는 아래 파일만 허용됩니다. 절대 다른 파일 생성 금지!**
+
+### 허용된 루트 파일
+- `main.py` - 메인 실행 파일 (유일한 Python 파일)
+- `run_crawler.ps1` - PowerShell 실행 스크립트 (⚠️ 절대 이동 금지)
+- `install_tkinter.ps1` - 설치 스크립트
+- `.env`, `.env.example` - 환경 설정
+- `.gitignore` - Git 설정
+- `README.md` - 프로젝트 소개
+- `requirements.txt` - 패키지 목록
+- `VERSION` - 버전 정보
+- `CHANGELOG.md` - 변경 이력
+- `CHECKPOINT.md` - Git 체크포인트
+- `CLAUDE.md` - Claude 사용 지침
+- `PROJECT_GUIDELINES.md` - 이 문서
+
+### 전체 디렉토리 구조
 ```
 Crawl/
 ├── src/                    # 소스 코드
@@ -23,21 +41,44 @@ Crawl/
 │   │   └── terminal_crawler.py  # 터미널 모드
 │   ├── database/          # DB 연동
 │   ├── gui/               # GUI 컴포넌트
-│   │   └── main_window.py # Tkinter GUI
+│   │   ├── main_window.py # Tkinter GUI
+│   │   └── category_tree_window.py # 카테고리 트리 GUI
 │   └── utils/             # 유틸리티
-│       └── config.py      # 설정 파일
+│       ├── config.py      # 설정 파일
+│       └── category_*.py  # 카테고리 수집기들
+├── tests/                 # 테스트 파일 (test_*.py만!)
+├── scripts/               # 스크립트 파일
+│   ├── run/              # 실행 스크립트
+│   │   ├── collect_categories.py
+│   │   └── run_tree_gui.py
+│   └── install/          # 설치 스크립트
+├── data/                  # 데이터 파일
+│   ├── *.json            # JSON 데이터
+│   ├── *.csv             # CSV 데이터
+│   ├── *.xlsx            # Excel 데이터
+│   ├── screenshots/      # 스크린샷
+│   └── temp/             # 임시 파일 (사용 후 즉시 삭제)
 ├── docs/                  # 문서
 │   ├── PRD.md            # 제품 요구사항 (한글)
+│   ├── CRAWLING_LESSONS_LEARNED.md  # 크롤링 시행착오
 │   └── selectors/        # 네이버 셀렉터 정보
-├── scripts/              # 실행 스크립트
-├── database/             # DB 스키마
+├── database/              # DB 스키마
 │   └── create_tables.sql
+├── logs/                  # 로그 파일
 ├── run_crawler.ps1       # ⚠️ 실행 스크립트 (절대 이동 금지)
-├── main.py              # 진입점
+├── main.py              # 진입점 (유일한 루트 Python 파일)
 ├── VERSION              # 버전 파일
 ├── CHANGELOG.md         # 변경 이력
 └── .env                 # 환경 변수
 ```
+
+### 📝 파일 생성 규칙
+1. **테스트 파일**: 반드시 `tests/test_*.py` 형식으로 `tests/` 폴더에만 생성
+2. **실행 스크립트**: `scripts/run/` 폴더에 생성
+3. **카테고리 수집기**: `src/utils/category_*.py` 형식으로 생성
+4. **데이터 파일**: `data/` 폴더에만 저장
+5. **임시 파일**: 절대 생성 금지! 필요시 `data/temp/` 사용 후 즉시 삭제
+6. **루트에 Python 파일 생성 절대 금지** (main.py만 예외)
 
 ## 🗄️ 데이터베이스 설정
 

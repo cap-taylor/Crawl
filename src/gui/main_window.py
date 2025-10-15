@@ -7,6 +7,9 @@ from datetime import datetime
 import queue
 import sys
 import locale
+import json
+import os
+import glob as glob_module
 
 # 인코딩 설정
 if sys.platform.startswith('win'):
@@ -29,7 +32,25 @@ class NaverCrawlerGUI:
 
         # 영문 타이틀 사용 (한글 깨짐 방지)
         self.root.title(f"Naver Shopping Crawler v{version}")
-        self.root.geometry("900x700")
+
+        # 플랫폼별 전체화면 설정
+        import platform
+        system = platform.system()
+
+        if system == 'Windows':
+            # Windows에서 최대화
+            self.root.state('zoomed')
+        else:
+            # Linux/Mac에서 최대화
+            self.root.attributes('-zoomed', True)
+            # 또는 화면 크기에 맞춰 설정
+            width = self.root.winfo_screenwidth()
+            height = self.root.winfo_screenheight()
+            self.root.geometry(f"{width}x{height}+0+0")
+
+        # 전체화면 토글 키 바인딩 (F11)
+        self.root.bind('<F11>', self.toggle_fullscreen)
+        self.root.bind('<Escape>', self.exit_fullscreen)
 
         # 큐 (스레드 간 통신)
         self.log_queue = queue.Queue()
@@ -58,6 +79,8 @@ class NaverCrawlerGUI:
             'primary': '#03C75A',  # 네이버 그린
             'secondary': '#1EC800',
             'danger': '#ff4444',
+            'warning': '#ffc107',  # 경고 색상 (노란색)
+            'info': '#17a2b8',     # 정보 색상 (청록색)
             'text': '#333333'
         }
 
@@ -105,6 +128,98 @@ class NaverCrawlerGUI:
             fg=self.colors['text']
         )
         control_frame.pack(fill=tk.X, pady=(0, 10))
+
+        # 카테고리 선택 프레임
+        category_header = tk.Frame(control_frame, bg=self.colors['bg'])
+        category_header.pack(fill=tk.X, padx=10, pady=(10, 5))
+
+        category_label = tk.Label(
+            category_header,
+            text="📌 카테고리 선택 (클릭하세요)",
+            font=(DEFAULT_FONT, 12, 'bold'),
+            bg=self.colors['bg'],
+            fg=self.colors['primary']
+        )
+        category_label.pack(side=tk.LEFT)
+
+        # 카테고리 수집 버튼
+        collect_cat_btn = tk.Button(
+            category_header,
+            text="📥 카테고리 수집",
+            command=self.collect_categories_action,
+            font=(DEFAULT_FONT, 9),
+            bg=self.colors['warning'],
+            fg='white',
+            cursor='hand2'
+        )
+        collect_cat_btn.pack(side=tk.RIGHT, padx=5)
+
+        # 카테고리 새로고침 버튼
+        refresh_btn = tk.Button(
+            category_header,
+            text="🔄 새로고침",
+            command=self.refresh_categories,
+            font=(DEFAULT_FONT, 9),
+            bg=self.colors['info'],
+            fg='white',
+            cursor='hand2'
+        )
+        refresh_btn.pack(side=tk.RIGHT, padx=5)
+
+        # 카테고리 버튼 그리드
+        self.category_grid_frame = tk.Frame(control_frame, bg=self.colors['bg'])
+        self.category_grid_frame.pack(fill=tk.X, padx=10, pady=5)
+
+        # 카테고리 로드
+        self.load_and_display_categories()
+
+        self.selected_categories = []
+        self.category_buttons = {}
+
+        # 카테고리별 프레임 생성
+        for main_category, sub_categories in self.categories.items():
+            # 메인 카테고리 라벨
+            main_frame = tk.Frame(category_grid_frame, bg=self.colors['bg'])
+            main_frame.pack(fill=tk.X, pady=2)
+
+            tk.Label(
+                main_frame,
+                text=f"▶ {main_category}",
+                font=(DEFAULT_FONT, 10, 'bold'),
+                bg=self.colors['bg'],
+                fg=self.colors['text'],
+                width=15,
+                anchor='w'
+            ).pack(side=tk.LEFT, padx=(0, 10))
+
+            # 서브 카테고리 버튼들
+            button_frame = tk.Frame(main_frame, bg=self.colors['bg'])
+            button_frame.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+            for sub_cat in sub_categories:
+                btn = tk.Button(
+                    button_frame,
+                    text=sub_cat,
+                    font=(DEFAULT_FONT, 9),
+                    bg='white',
+                    fg=self.colors['text'],
+                    width=10,
+                    relief=tk.RAISED,
+                    cursor='hand2',
+                    command=lambda c=sub_cat: self.toggle_category(c)
+                )
+                btn.pack(side=tk.LEFT, padx=2)
+                self.category_buttons[sub_cat] = btn
+
+        # 선택된 카테고리 표시 라벨
+        self.selected_label = tk.Label(
+            control_frame,
+            text="선택된 카테고리: 없음",
+            font=(DEFAULT_FONT, 10),
+            bg=self.colors['bg'],
+            fg=self.colors['danger']
+        )
+        self.selected_label.pack(pady=5)
 
         # 첫 번째 행 - 크롤링 타입 선택
         type_frame = tk.Frame(control_frame, bg=self.colors['bg'])
@@ -168,6 +283,7 @@ class NaverCrawlerGUI:
         )
         self.stop_btn.pack(side=tk.LEFT, padx=5)
 
+        # 로그 버튼들
         self.clear_btn = tk.Button(
             button_frame,
             text="로그 지우기",
@@ -180,6 +296,19 @@ class NaverCrawlerGUI:
             cursor='hand2'
         )
         self.clear_btn.pack(side=tk.RIGHT, padx=5)
+
+        self.copy_btn = tk.Button(
+            button_frame,
+            text="로그 복사",
+            command=self.copy_logs,
+            font=(DEFAULT_FONT, 10),
+            bg='#4a90e2',
+            fg='white',
+            width=15,
+            height=2,
+            cursor='hand2'
+        )
+        self.copy_btn.pack(side=tk.RIGHT, padx=5)
 
     def setup_progress_panel(self, parent):
         """진행 상태 패널 설정"""
@@ -303,6 +432,38 @@ class NaverCrawlerGUI:
         self.log_text.delete(1.0, tk.END)
         self.add_log("로그가 초기화되었습니다.", 'INFO')
 
+    def toggle_category(self, category):
+        """카테고리 선택/해제 토글"""
+        if category in self.selected_categories:
+            self.selected_categories.remove(category)
+            self.category_buttons[category].config(
+                bg='white',
+                fg=self.colors['text'],
+                relief=tk.RAISED
+            )
+        else:
+            self.selected_categories.append(category)
+            self.category_buttons[category].config(
+                bg=self.colors['primary'],
+                fg='white',
+                relief=tk.SUNKEN
+            )
+
+        # 선택된 카테고리 표시 업데이트
+        if self.selected_categories:
+            categories_text = ", ".join(self.selected_categories[:5])
+            if len(self.selected_categories) > 5:
+                categories_text += f" 외 {len(self.selected_categories)-5}개"
+            self.selected_label.config(
+                text=f"✅ 선택된 카테고리 ({len(self.selected_categories)}개): {categories_text}",
+                fg=self.colors['primary']
+            )
+        else:
+            self.selected_label.config(
+                text="선택된 카테고리: 없음",
+                fg=self.colors['danger']
+            )
+
     def start_crawling(self):
         """크롤링 시작"""
         if self.is_crawling:
@@ -317,11 +478,25 @@ class NaverCrawlerGUI:
         crawl_type = self.crawl_type.get()
 
         self.add_log(f"크롤링을 시작합니다. (타입: {crawl_type})", 'SUCCESS')
+
+        # 카테고리만 수집인 경우 전체 카테고리 수집
+        if crawl_type == "categories":
+            self.add_log("전체 카테고리를 수집합니다.", 'INFO')
+        else:
+            # 카테고리 + 상품 수집인 경우만 선택 체크
+            if not self.selected_categories:
+                messagebox.showwarning("경고", "상품 수집을 위해 카테고리를 선택해주세요.")
+                self.is_crawling = False
+                self.start_btn.config(state=tk.NORMAL)
+                self.stop_btn.config(state=tk.DISABLED)
+                return
+            self.add_log(f"선택된 카테고리: {', '.join(self.selected_categories)}", 'INFO')
+
         self.status_label.config(text="상태: 크롤링 중...")
 
         self.crawler_thread = threading.Thread(
             target=self.run_crawler,
-            args=(crawl_type,),
+            args=(crawl_type, self.selected_categories),
             daemon=True
         )
         self.crawler_thread.start()
@@ -335,13 +510,13 @@ class NaverCrawlerGUI:
         self.add_log("크롤링을 중지합니다...", 'WARNING')
         self.status_label.config(text="상태: 중지됨")
 
-    def run_crawler(self, crawl_type):
+    def run_crawler(self, crawl_type, selected_categories):
         """Run crawler in separate thread"""
         try:
             # Import crawler from proper location
             from src.core.crawler import CategoryCrawler
 
-            crawler = CategoryCrawler(gui=self, headless=False)  # 항상 False (봇 차단 방지)
+            crawler = CategoryCrawler(gui=self, headless=False, selected_categories=selected_categories)
 
             if crawl_type == "categories":
                 crawler.crawl_categories_only()
@@ -385,6 +560,207 @@ class NaverCrawlerGUI:
     def update_progress(self, value):
         """진행률 업데이트"""
         self.progress_var.set(value)
+
+    def load_and_display_categories(self):
+        """저장된 카테고리 로드 및 표시"""
+        # 기존 버튼들 제거
+        for widget in self.category_grid_frame.winfo_children():
+            widget.destroy()
+
+        # 카테고리 로드
+        categories = self.load_categories()
+
+        if categories:
+            self.categories = categories
+        else:
+            # 기본 카테고리 (수집 전)
+            self.categories = {
+                "카테고리 미수집": ["먼저 '📥 카테고리 수집' 버튼을 클릭하세요"]
+            }
+
+        self.selected_categories = []
+        self.category_buttons = {}
+
+        # 카테고리별 프레임 생성
+        for main_category, sub_categories in self.categories.items():
+            # 메인 카테고리 라벨
+            main_frame = tk.Frame(self.category_grid_frame, bg=self.colors['bg'])
+            main_frame.pack(fill=tk.X, pady=2)
+
+            tk.Label(
+                main_frame,
+                text=f"▶ {main_category}",
+                font=(DEFAULT_FONT, 10, 'bold'),
+                bg=self.colors['bg'],
+                fg=self.colors['text'],
+                width=15,
+                anchor='w'
+            ).pack(side=tk.LEFT, padx=(0, 10))
+
+            # 서브 카테고리 버튼들
+            sub_frame = tk.Frame(main_frame, bg=self.colors['bg'])
+            sub_frame.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+            for sub_cat in sub_categories[:6]:  # 최대 6개만 표시
+                if isinstance(sub_cat, dict):
+                    cat_name = sub_cat.get('name', sub_cat)
+                else:
+                    cat_name = sub_cat
+
+                btn = tk.Button(
+                    sub_frame,
+                    text=cat_name,
+                    command=lambda c=cat_name: self.toggle_category(c),
+                    font=(DEFAULT_FONT, 9),
+                    bg='white',
+                    fg=self.colors['text'],
+                    width=12,
+                    height=1,
+                    relief=tk.RAISED,
+                    cursor='hand2'
+                )
+                btn.pack(side=tk.LEFT, padx=2)
+                self.category_buttons[cat_name] = btn
+
+            if len(sub_categories) > 6:
+                tk.Label(
+                    sub_frame,
+                    text=f"... 외 {len(sub_categories)-6}개",
+                    font=(DEFAULT_FONT, 9),
+                    bg=self.colors['bg'],
+                    fg='gray'
+                ).pack(side=tk.LEFT, padx=5)
+
+    def load_categories(self):
+        """저장된 카테고리 파일 로드"""
+        try:
+            # 가장 최근 카테고리 파일 찾기
+            category_files = glob_module.glob('data/categories_complete_*.json')
+            if not category_files:
+                return None
+
+            # 가장 최근 파일 선택
+            latest_file = max(category_files, key=os.path.getctime)
+
+            with open(latest_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+
+            # 데이터 구조 변환 (대분류: [중분류 리스트])
+            result = {}
+            for main_cat, info in data.items():
+                if isinstance(info, dict) and 'sub_categories' in info:
+                    # 서브카테고리 이름만 추출
+                    sub_names = []
+                    for sub in info['sub_categories']:
+                        if isinstance(sub, dict):
+                            sub_names.append(sub.get('name', 'Unknown'))
+                        else:
+                            sub_names.append(sub)
+                    result[main_cat] = sub_names[:20]  # 최대 20개
+                else:
+                    result[main_cat] = []
+
+            self.add_log(f"카테고리 로드 완료: {len(result)}개 대분류", 'SUCCESS')
+            return result
+
+        except Exception as e:
+            self.add_log(f"카테고리 로드 실패: {str(e)}", 'WARNING')
+            return None
+
+    def refresh_categories(self):
+        """카테고리 새로고침"""
+        self.add_log("카테고리를 새로고침합니다...", 'INFO')
+        self.load_and_display_categories()
+
+    def collect_categories_action(self):
+        """카테고리 수집 실행"""
+        if self.is_crawling:
+            messagebox.showwarning("경고", "이미 크롤링이 진행 중입니다.")
+            return
+
+        result = messagebox.askyesno(
+            "카테고리 수집",
+            "전체 카테고리를 수집하시겠습니까?\n(약 5-10분 소요됩니다)"
+        )
+
+        if result:
+            self.is_crawling = True
+            self.start_btn.config(state=tk.DISABLED)
+            self.stop_btn.config(state=tk.NORMAL)
+
+            self.add_log("전체 카테고리 수집을 시작합니다...", 'INFO')
+            self.status_label.config(text="상태: 카테고리 수집 중...")
+
+            # 카테고리 수집 스레드 시작
+            self.crawler_thread = threading.Thread(
+                target=self.run_category_collection,
+                daemon=True
+            )
+            self.crawler_thread.start()
+
+    def run_category_collection(self):
+        """카테고리 수집 실행 (별도 스레드)"""
+        try:
+            from src.utils.category_collector_complete import CompleteCategoryCollector
+            collector = CompleteCategoryCollector(gui=self, headless=False)
+
+            import asyncio
+            asyncio.run(collector.collect_all_categories())
+
+            # 수집 완료 후 자동 새로고침
+            self.root.after(0, self.refresh_categories)
+
+        except Exception as e:
+            self.add_log(f"카테고리 수집 오류: {str(e)}", 'ERROR')
+        finally:
+            self.is_crawling = False
+            self.root.after(0, lambda: self.start_btn.config(state=tk.NORMAL))
+            self.root.after(0, lambda: self.stop_btn.config(state=tk.DISABLED))
+            self.root.after(0, lambda: self.status_label.config(text="상태: 완료"))
+
+    def copy_logs(self):
+        """로그 복사"""
+        try:
+            # 로그 텍스트 전체 가져오기
+            log_content = self.log_text.get(1.0, tk.END)
+
+            if log_content.strip():
+                # 클립보드에 복사
+                self.root.clipboard_clear()
+                self.root.clipboard_append(log_content)
+
+                # 복사 완료 알림
+                self.add_log("로그가 클립보드에 복사되었습니다.", 'SUCCESS')
+
+                # 버튼 색 잠시 변경 (피드백)
+                self.copy_btn.config(bg='#28a745')
+                self.root.after(1000, lambda: self.copy_btn.config(bg='#4a90e2'))
+            else:
+                messagebox.showinfo("알림", "복사할 로그가 없습니다.")
+
+        except Exception as e:
+            self.add_log(f"로그 복사 실패: {str(e)}", 'ERROR')
+
+    def toggle_fullscreen(self, event=None):
+        """F11 키로 전체화면 토글"""
+        current_state = self.root.attributes('-fullscreen')
+        self.root.attributes('-fullscreen', not current_state)
+        return "break"
+
+    def exit_fullscreen(self, event=None):
+        """ESC 키로 전체화면 종료"""
+        self.root.attributes('-fullscreen', False)
+
+        # 플랫폼별 최대화 상태로 돌아가기
+        import platform
+        if platform.system() == 'Windows':
+            self.root.state('zoomed')
+        else:
+            width = self.root.winfo_screenwidth()
+            height = self.root.winfo_screenheight()
+            self.root.geometry(f"{width}x{height}+0+0")
+
+        return "break"
 
 def main():
     root = tk.Tk()
