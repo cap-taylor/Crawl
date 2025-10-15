@@ -13,7 +13,7 @@ import customtkinter as ctk
 
 # 프로젝트 경로 추가
 sys.path.append('/home/dino/MyProjects/Crawl')
-from tests.test_womens_manual_captcha import WomensClothingManualCaptcha
+from src.core.product_crawler import WomensClothingManualCaptcha
 
 
 def remove_emojis(text):
