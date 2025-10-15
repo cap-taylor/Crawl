@@ -151,21 +151,21 @@ class DatabaseConnector:
                 'is_sold_out': result[9]
             }
 
-            # 새 데이터 정리
+            # 새 데이터 정리 (detail_info 우선, 없으면 product_info)
             detail_info = product_data.get('detail_page_info', {})
             product_info = product_data.get('product_info', {})
 
             new_data = {
-                'product_name': product_info.get('product_name', f"상품_{product_id}"),
-                'brand_name': product_info.get('brand', None),
-                'price': int(product_info.get('price', 0)) if product_info.get('price') else None,
-                'discount_rate': int(product_info.get('discount_rate', 0)) if product_info.get('discount_rate') else None,
-                'review_count': int(product_info.get('review_count', 0)) if product_info.get('review_count') else 0,
-                'rating': float(product_info.get('rating', 0)) if product_info.get('rating') else None,
+                'product_name': detail_info.get('detail_product_name') or product_info.get('product_name', f"상품_{product_id}"),
+                'brand_name': detail_info.get('brand_name') or product_info.get('brand', None),
+                'price': detail_info.get('detail_price') or (int(product_info.get('price', 0)) if product_info.get('price') else None),
+                'discount_rate': detail_info.get('discount_rate') or (int(product_info.get('discount_rate', 0)) if product_info.get('discount_rate') else None),
+                'review_count': detail_info.get('detail_review_count') or (int(product_info.get('review_count', 0)) if product_info.get('review_count') else 0),
+                'rating': detail_info.get('rating') or (float(product_info.get('rating', 0)) if product_info.get('rating') else None),
                 'search_tags': detail_info.get('search_tags', []),
                 'product_url': product_data.get('product_url', ''),
-                'thumbnail_url': product_info.get('thumbnail_url', None),
-                'is_sold_out': False
+                'thumbnail_url': detail_info.get('thumbnail_url') or product_info.get('thumbnail_url', None),
+                'is_sold_out': detail_info.get('is_sold_out', False)
             }
 
             # 모든 필드 비교
@@ -228,16 +228,16 @@ class DatabaseConnector:
             detail_info = product_data.get('detail_page_info', {})
             product_info = product_data.get('product_info', {})
 
-            # 모든 필드 정리
-            product_name = product_info.get('product_name', f"상품_{product_id}")
-            brand_name = product_info.get('brand', None)
-            price = int(product_info.get('price', 0)) if product_info.get('price') else None
-            discount_rate = int(product_info.get('discount_rate', 0)) if product_info.get('discount_rate') else None
-            review_count = int(product_info.get('review_count', 0)) if product_info.get('review_count') else 0
-            rating = float(product_info.get('rating', 0)) if product_info.get('rating') else None
+            # 모든 필드 정리 (detail_info 우선, 없으면 product_info)
+            product_name = detail_info.get('detail_product_name') or product_info.get('product_name', f"상품_{product_id}")
+            brand_name = detail_info.get('brand_name') or product_info.get('brand', None)
+            price = detail_info.get('detail_price') or (int(product_info.get('price', 0)) if product_info.get('price') else None)
+            discount_rate = detail_info.get('discount_rate') or (int(product_info.get('discount_rate', 0)) if product_info.get('discount_rate') else None)
+            review_count = detail_info.get('detail_review_count') or (int(product_info.get('review_count', 0)) if product_info.get('review_count') else 0)
+            rating = detail_info.get('rating') or (float(product_info.get('rating', 0)) if product_info.get('rating') else None)
             search_tags = detail_info.get('search_tags', [])
-            thumbnail_url = product_info.get('thumbnail_url', None)
-            is_sold_out = False
+            thumbnail_url = detail_info.get('thumbnail_url') or product_info.get('thumbnail_url', None)
+            is_sold_out = detail_info.get('is_sold_out', False)
             category_fullname = detail_info.get('category_fullname', category_name)  # 전체 카테고리 경로
 
             # 상품 데이터 저장 (UPSERT) - category_fullname 추가

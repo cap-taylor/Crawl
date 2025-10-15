@@ -524,9 +524,10 @@ class ProductCollectorGUI:
             # WSL 환경에서는 clip.exe를 사용해 Windows 클립보드에 직접 복사
             if platform.system() == 'Linux' and 'microsoft' in platform.uname().release.lower():
                 # WSL 환경 감지
+                # clip.exe는 UTF-16LE BOM이 필요함
                 process = subprocess.run(
                     ['clip.exe'],
-                    input=log_content.encode('utf-8'),
+                    input=log_content.encode('utf-16le'),
                     check=True,
                     capture_output=True
                 )

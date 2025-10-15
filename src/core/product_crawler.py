@@ -316,13 +316,8 @@ class WomensClothingManualCaptcha:
 
                             print(f"\n[{idx+1}번째 상품] 수집 중...")
 
-                            # 매번 새로 element 찾기 (DOM 변경 대응) - 이미지 있는 링크만
-                            current_elements = await page.query_selector_all('a[href*="/products/"]:has(img)')
-                            if idx >= len(current_elements):
-                                print(f"[경고] 더 이상 상품이 없습니다.")
-                                break
-
-                            product_elem = current_elements[idx]
+                            # 처음 찾은 element 사용 (재탐색 하지 않음)
+                            product_elem = all_product_elements[idx]
                             href = await product_elem.get_attribute('href')
 
                             try:
@@ -377,17 +372,33 @@ class WomensClothingManualCaptcha:
 
                                 # 한 줄 요약 출력
                                 detail_info = self.product_data.get('detail_page_info', {})
-                                product_name = detail_info.get('detail_product_name', 'N/A')[:30]
-                                tags_count = len(detail_info.get('search_tags', []))
+                                product_name = detail_info.get('detail_product_name')
 
-                                # 수집 완료
+                                # 상품명 검증 (잘못된 페이지인지 확인)
+                                invalid_keywords = ['본문', '바로가기', '네이버', '로그인', '서비스', '스토어 홈', 'For w', 'NAVER']
+                                is_invalid = (
+                                    not product_name or
+                                    product_name == 'N/A' or
+                                    len(product_name) < 5 or  # 너무 짧음
+                                    any(keyword in product_name for keyword in invalid_keywords)  # 메뉴 텍스트
+                                )
+
+                                if is_invalid:
+                                    print(f"#{idx+1} [SKIP] 잘못된 상품명: '{(product_name or 'None')[:30]}' - 다음 상품으로")
+                                    print(f"         현재 URL: {detail_page.url[:70]}")
+                                    await detail_page.close()
+                                    idx += 1
+                                    continue
+
+                                # 정상 상품 - 수집 완료
+                                tags_count = len(detail_info.get('search_tags', []))
                                 self.products_data.append(self.product_data.copy())
                                 found_count += 1
 
                                 if self.product_count is None:
-                                    print(f"#{idx+1} [{product_name}] - 태그 {tags_count}개 (총 {found_count}개)")
+                                    print(f"#{idx+1} [{product_name[:30]}] - 태그 {tags_count}개 (총 {found_count}개)")
                                 else:
-                                    print(f"#{idx+1} [{product_name}] - 태그 {tags_count}개 ({found_count}/{self.product_count})")
+                                    print(f"#{idx+1} [{product_name[:30]}] - 태그 {tags_count}개 ({found_count}/{self.product_count})")
 
                                 # 탭 닫기
                                 await detail_page.close()
@@ -667,8 +678,22 @@ class WomensClothingManualCaptcha:
                 for link in breadcrumb_links:
                     text = await self.helper.extract_text(link)
                     if text:
-                        # "홈", "전체", "쇼핑홈" 같은 불필요한 단어 제거
+                        # 텍스트 정리
                         clean_text = text.strip()
+
+                        # 1. "(총 X개)" 패턴 제거
+                        clean_text = re.sub(r'\(총\s*\d+개\)', '', clean_text).strip()
+                        # 2. ">(총 X개)" 패턴 제거
+                        clean_text = re.sub(r'>\(총\s*\d+개\)', '', clean_text).strip()
+                        # 3. 이모지 제거 (유니코드 범위)
+                        clean_text = re.sub(r'[\U00010000-\U0010ffff]', '', clean_text).strip()
+                        clean_text = re.sub(r'[\u2600-\u26FF\u2700-\u27BF\U0001F300-\U0001F9FF]', '', clean_text).strip()
+                        # 4. "★", "🚚" 같은 특수문자 제거
+                        clean_text = re.sub(r'[★☆♥♡🚚🍇🍁🍚🤎]', '', clean_text).strip()
+                        # 5. 연속 공백 제거
+                        clean_text = ' '.join(clean_text.split())
+
+                        # "홈", "전체", "쇼핑홈" 같은 불필요한 단어 제거
                         if clean_text and clean_text not in ['홈', '전체', '쇼핑홈', '쇼핑', 'HOME']:
                             category_path.append(clean_text)
 
