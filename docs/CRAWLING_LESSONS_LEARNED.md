@@ -3,7 +3,7 @@
 > 이 문서는 네이버 쇼핑 크롤링 개발 과정에서 겪은 모든 시행착오와 해결책을 기록합니다.
 > **절대 같은 실수를 반복하지 않기 위한 필수 참고 문서입니다.**
 
-## 📅 최종 업데이트: 2025-10-15 17:30
+## 📅 최종 업데이트: 2025-10-15 20:15
 
 ---
 
@@ -358,6 +358,8 @@ user_agent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
 | 2025-10-15 | 1번째부터 전체 수집 (광고 포함) | ✅ 20개 수집 (태그 13개) |
 | 2025-10-15 | DB 중복 체크 기능 추가 | ✅ 모든 스키마 비교 |
 | 2025-10-15 | 캡차 대기 20초 → 30초 | ✅ 난이도 증가 대응 |
+| 2025-10-15 | ElementHandle try 블록 밖 | ❌ 크롤러 중단 (Target closed) |
+| 2025-10-15 | get_attribute try 블록 안 이동 | ✅ 오류 복구, 수집 계속 |
 
 ---
 
@@ -1748,5 +1750,185 @@ await element.click()
 | 2025-10-15 | 상단 스크롤 추가 | ✅ 정상 클릭 |
 | 2025-10-15 | Locator API 사용 | ✅ 안정성 향상 |
 | 2025-10-15 | 40번째 상품 수집 성공 | ✅ 모든 필드 수집 완료 |
+
+---
+
+## ⚠️ ElementHandle 예외 처리 오류 (2025-10-15)
+
+### 문제 상황
+- **증상**: 크롤러가 13번째 상품에서 중단되고 오류 발생
+- **에러**: `ElementHandle.get_attribute: Target page, context or browser has been closed`
+- **위치**: `product_crawler.py:321` - `href = await product_elem.get_attribute('href')`
+
+### 근본 원인 분석
+
+#### 발생 시나리오
+1. **12번째 상품**: 잘못된 페이지(카테고리 홈)로 연결됨
+2. **URL 검증 실패**: `if not re.search(r'/products/\d+', current_url)` → SKIP
+3. **탭 닫기**: `await detail_page.close()` 실행
+4. **13번째 상품**: ElementHandle이 무효화된 상태
+5. **get_attribute 호출**: **try 블록 밖**에서 실행 → 예외 처리 안 됨 → 크롤러 중단
+
+#### 코드 문제점
+```python
+# ❌ 문제 코드 (321번 줄)
+print(f"\n[{idx+1}번째 상품] 수집 중...")
+
+# 처음 찾은 element 사용 (재탐색 하지 않음)
+product_elem = all_product_elements[idx]
+href = await product_elem.get_attribute('href')  # ← try 블록 밖! 오류 발생 시 크롤러 중단
+
+try:
+    # 상품 클릭 (viewport로 스크롤 후 클릭)
+    ...
+```
+
+**핵심 문제**:
+- `get_attribute('href')` 호출이 **try 블록 밖에 위치**
+- 이전 상품의 탭을 닫은 후 ElementHandle이 무효화됨
+- "Target page, context or browser has been closed" 오류 발생
+- try-except 블록으로 보호되지 않아 크롤러 전체 중단
+
+### ✅ 해결 방법
+
+#### 수정된 코드
+```python
+# ✅ 해결 코드 (319-327번 줄)
+print(f"\n[{idx+1}번째 상품] 수집 중...")
+
+try:  # ← try 블록 시작을 앞으로 이동
+    # 처음 찾은 element 사용 (재탐색 하지 않음)
+    product_elem = all_product_elements[idx]
+    href = await product_elem.get_attribute('href')  # ← 이제 try 블록 안!
+
+    if not href:
+        print(f"#{idx+1} [SKIP] URL을 가져올 수 없음")
+        idx += 1
+        continue
+
+    # 상품 클릭 (viewport로 스크롤 후 클릭)
+    try:
+        await product_elem.scroll_into_view_if_needed()
+        await product_elem.click(timeout=10000)
+    except Exception as click_error:
+        print(f"   [재시도] 강제 클릭 시도...")
+        await product_elem.click(force=True, timeout=5000)
+
+    # ... 상품 정보 수집 ...
+
+except Exception as e:
+    print(f"#{idx+1} [ERROR] {str(e)[:50]}")
+    try:
+        if len(context.pages) > 2:
+            await context.pages[-1].close()
+    except:
+        pass
+
+idx += 1  # 모든 케이스에서 다음 상품으로
+```
+
+### 동작 방식 비교
+
+#### ❌ 수정 전
+```
+1. 12번 상품 클릭 → 잘못된 페이지
+2. URL 검증 실패 → 탭 닫기
+3. 13번 상품: get_attribute() 호출 (try 블록 밖)
+4. 오류 발생: "Target closed"
+5. 예외 처리 안됨 → 크롤러 중단 ❌
+```
+
+#### ✅ 수정 후
+```
+1. 12번 상품 클릭 → 잘못된 페이지
+2. URL 검증 실패 → 탭 닫기
+3. 13번 상품: get_attribute() 호출 (try 블록 안)
+4. 오류 발생: "Target closed"
+5. except 블록 실행 → 오류 로그 출력
+6. 탭 정리 → idx += 1 → 14번 상품 계속 진행 ✅
+```
+
+### 🔑 핵심 교훈
+
+#### 1. 예외 처리 범위 설정
+```python
+# ❌ 잘못된 범위
+variable = risky_operation()  # try 블록 밖
+try:
+    use_variable()
+except:
+    pass  # risky_operation 오류는 못 잡음!
+
+# ✅ 올바른 범위
+try:
+    variable = risky_operation()  # try 블록 안
+    use_variable()
+except:
+    pass  # 모든 오류 처리 가능
+```
+
+#### 2. ElementHandle 무효화 이해
+- **원인**: 페이지/탭을 닫거나 네비게이션 발생
+- **증상**: "Target page, context or browser has been closed"
+- **대응**: 모든 ElementHandle 작업을 try 블록으로 보호
+
+#### 3. 크롤링 루프 설계 원칙
+```python
+# ✅ 안전한 패턴
+while idx < len(elements):
+    try:
+        # 모든 위험한 작업을 try 안에
+        elem = elements[idx]
+        data = await process_element(elem)
+        results.append(data)
+    except Exception as e:
+        log_error(e)
+        # 정리 작업
+    finally:
+        idx += 1  # 항상 다음으로 진행
+```
+
+#### 4. 디버깅 팁
+- **오류 위치**: 트레이스백에서 정확한 라인 번호 확인
+- **컨텍스트 확인**: try 블록 범위 체크
+- **이전 작업**: 오류 직전에 탭/페이지 조작 있었는지 확인
+
+### ⚠️ 절대 규칙
+
+1. **모든 ElementHandle 작업은 try 블록 안에**
+   - `get_attribute()`, `click()`, `inner_text()` 등
+   - DOM 참조는 언제든 무효화될 수 있음
+
+2. **크롤링 루프는 절대 중단되면 안됨**
+   - 한 상품 실패 = 다음 상품 계속
+   - try-except로 모든 작업 보호
+   - finally 또는 except 후 idx 증가
+
+3. **예외 처리 범위를 신중히 설계**
+   - 위험한 작업부터 try 블록 시작
+   - 변수 생성도 try 안에서
+
+4. **오류 메시지는 자세히 로그**
+   - 어느 상품에서 실패했는지
+   - 어떤 작업 중이었는지
+   - 현재 URL은 무엇인지
+
+### 📊 실제 개선 효과
+
+**수정 전**:
+- 12번 상품 실패 → 13번 상품 오류 → 크롤러 중단
+- 수집 완료: 0개 (실패)
+
+**수정 후**:
+- 12번 상품 실패 → SKIP
+- 13번 상품 오류 → except 처리 → SKIP
+- 14번 상품부터 정상 수집 재개
+- 수집 완료: 3개 (성공)
+
+### ⚠️ 업데이트 로그
+| 날짜 | 내용 | 결과 |
+|------|------|------|
+| 2025-10-15 | get_attribute try 블록 밖 | ❌ 크롤러 중단 |
+| 2025-10-15 | get_attribute try 블록 안 이동 | ✅ 오류 복구, 수집 계속 |
 
 ---

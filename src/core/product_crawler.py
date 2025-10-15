@@ -316,11 +316,15 @@ class WomensClothingManualCaptcha:
 
                             print(f"\n[{idx+1}번째 상품] 수집 중...")
 
-                            # 처음 찾은 element 사용 (재탐색 하지 않음)
-                            product_elem = all_product_elements[idx]
-                            href = await product_elem.get_attribute('href')
-
                             try:
+                                # 처음 찾은 element 사용 (재탐색 하지 않음)
+                                product_elem = all_product_elements[idx]
+                                href = await product_elem.get_attribute('href')
+
+                                if not href:
+                                    print(f"#{idx+1} [SKIP] URL을 가져올 수 없음")
+                                    idx += 1
+                                    continue
                                 # 상품 클릭 (viewport로 스크롤 후 클릭)
                                 try:
                                     # 1. Element를 화면에 보이도록 스크롤
