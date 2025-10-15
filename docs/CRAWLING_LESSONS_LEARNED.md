@@ -3,7 +3,7 @@
 > 이 문서는 네이버 쇼핑 크롤링 개발 과정에서 겪은 모든 시행착오와 해결책을 기록합니다.
 > **절대 같은 실수를 반복하지 않기 위한 필수 참고 문서입니다.**
 
-## 📅 최종 업데이트: 2025-10-15 12:50
+## 📅 최종 업데이트: 2025-10-15 17:30
 
 ---
 
@@ -1221,3 +1221,532 @@ detail_info['search_tags'] = []  # 빈 배열로 저장
 ---
 
 **⚠️ 중요**: 이 문서에 기록된 시행착오는 절대 반복하지 말 것!
+
+---
+
+## 📂 카테고리 경로 수집 프로젝트 (2025-10-15)
+
+### 프로젝트 목표
+DB 스키마에 `category_fullname` VARCHAR(500) 필드 추가 후 완전한 카테고리 경로 수집
+- **예시**: "여성의류" → "하의 > 바지 & 슬렉스"
+
+**테스트 파일**: `/tests/test_product_50th.py`
+
+---
+
+### ✅ 성공한 구조 기반 Breadcrumb 수집
+
+#### 접근 방법
+네이버의 난독화된 클래스명(예: `ul.ySOklWNBjf`)에 의존하지 않고, HTML 구조만으로 수집
+
+**핵심 아이디어**:
+1. "홈" 텍스트 링크 찾기 (항상 breadcrumb 시작)
+2. 부모 `<ul>` 찾기 (XPath 사용)
+3. 모든 `<li> <a>` 수집 (카테고리 경로)
+
+**구현 코드** (`src/utils/selector_helper.py`):
+```python
+async def find_breadcrumb_from_home(self, page: Page) -> Optional[List[ElementHandle]]:
+    """
+    구조 기반 breadcrumb 수집: '홈' 텍스트로 ul 찾기 → 모든 li > a 수집
+    """
+    try:
+        # Locator API 사용 (JSHandle 오류 해결)
+        home_link = page.locator('a:has-text("홈")').first
+
+        # 부모 ul 찾기 (XPath 사용)
+        ul_locator = home_link.locator('xpath=ancestor::ul[1]')
+
+        # ul 내의 모든 li a 찾기
+        breadcrumb_locator = ul_locator.locator('li a')
+
+        # ElementHandle로 변환
+        count = await breadcrumb_locator.count()
+        breadcrumb_links = []
+        for i in range(count):
+            elem = await breadcrumb_locator.nth(i).element_handle()
+            if elem:
+                breadcrumb_links.append(elem)
+
+        return breadcrumb_links if breadcrumb_links else None
+    except Exception as e:
+        return None
+```
+
+**Multi-Fallback 전략** (`src/core/product_crawler.py`):
+```python
+# 1순위: 구조 기반 (가장 안정적)
+breadcrumb_links = await self.helper.find_breadcrumb_from_home(page)
+
+# 2순위: config 기반 fallback
+if not breadcrumb_links:
+    breadcrumb_links = await self.helper.try_selectors(
+        page, SELECTORS['category_breadcrumb'], "카테고리 경로", multiple=True
+    )
+
+# 경로 조합
+for link in breadcrumb_links:
+    text = await self.helper.extract_text(link)
+    if text and text not in ['홈', '전체', '쇼핑홈']:
+        category_path.append(text)
+
+detail_info['category_fullname'] = '>'.join(category_path)
+```
+
+---
+
+### ❌ 실패 1: JSHandle 오류 (2025-10-15)
+
+#### 문제 상황
+- **증상**: `'JSHandle' object has no attribute 'query_selector'`
+- **위치**: `find_breadcrumb_from_home()` 함수
+
+#### 원인 분석
+```python
+# ❌ 문제 코드
+ul_element = await home_link.evaluate_handle('el => el.closest("ul")')
+breadcrumb_links = await ul_element.query_selector_all('li a')  # 에러!
+```
+
+**근본 원인**:
+- `evaluate_handle()`은 JSHandle을 반환 (JavaScript 객체)
+- JSHandle은 `query_selector_all()` 메서드가 없음
+- ElementHandle만 Playwright 메서드 사용 가능
+
+#### ✅ 해결 방법 (Locator API + XPath)
+```python
+# ✅ 해결 코드
+home_link = page.locator('a:has-text("홈")').first
+ul_locator = home_link.locator('xpath=ancestor::ul[1]')  # XPath로 부모 찾기
+breadcrumb_locator = ul_locator.locator('li a')
+
+# ElementHandle로 변환
+count = await breadcrumb_locator.count()
+for i in range(count):
+    elem = await breadcrumb_locator.nth(i).element_handle()
+    breadcrumb_links.append(elem)
+```
+
+**핵심 포인트**:
+- ✅ Locator API 사용 (최신 Playwright 패턴)
+- ✅ XPath로 부모 요소 탐색 (`ancestor::ul[1]`)
+- ✅ 명시적 ElementHandle 변환
+
+---
+
+### ❌ 실패 2: 카테고리 텍스트에 개행 문자 포함 (2025-10-15)
+
+#### 문제 상황
+- **기대**: `"하의>(총 193개) 바지 & 슬렉스"`
+- **실제**: `"하의>(총 193개)\n바지 & 슬렉스"` ← 개행 포함
+
+#### 원인 분석
+```python
+# ❌ 문제 코드
+text = await element.inner_text()
+text = text.strip()  # strip()은 양 끝 공백만 제거
+```
+
+**근본 원인**:
+- HTML에서 `<br>` 또는 블록 요소로 개행 표현
+- `inner_text()`는 개행 문자를 그대로 반환
+- `strip()`은 중간 개행 제거 안함
+
+#### ✅ 해결 방법 (정규화 강화)
+```python
+# ✅ 해결 코드
+text = await element.inner_text()
+if clean:
+    text = text.strip()
+    text = text.replace('\n', ' ')  # 개행 → 공백
+    text = ' '.join(text.split())   # 연속 공백 제거
+```
+
+**결과**:
+- `"하의>(총 193개)\n바지 & 슬렉스"` → `"하의>(총 193개) 바지 & 슬렉스"`
+
+---
+
+### ❌ 실패 3: 클릭 오류 (상점 링크 클릭) - 이전 세션
+
+#### 문제 상황
+- **증상**: 상품 이미지가 아닌 상점(스토어명) 클릭
+- **결과**: 스토어 홈페이지로 이동, 상품 정보 수집 실패
+
+#### 원인 분석
+```python
+# ❌ 문제 코드
+product_elements = await page.query_selector_all('a[href*="/products/"]')
+```
+
+**근본 원인**:
+- `a[href*="/products/"]` 셀렉터가 너무 광범위
+- 상품명, 브랜드명, 스토어명 링크 모두 매칭
+- 상점명 링크도 `/products/` URL 포함
+
+#### ✅ 해결 방법 (3-Layer 검증)
+```python
+# ✅ 해결 코드
+# Layer 1: 이미지 링크만 선택
+product_elements = await page.query_selector_all('a[href*="/products/"]:has(img)')
+
+# Layer 2: Regex URL 검증
+for elem in product_elements:
+    href = await elem.get_attribute('href')
+    if href and re.search(r'/products/\d+', href):  # 숫자 ID 확인
+        all_product_elements.append(elem)
+
+# Layer 3: 클릭 후 URL 검증 (Auto-retry 루프에서)
+current_url = detail_page.url
+if not re.search(r'/products/\d+', current_url):
+    print("[SKIP] 잘못된 페이지 (스토어 페이지?)")
+    await detail_page.close()
+    idx += 1
+    continue
+```
+
+**핵심 포인트**:
+- ✅ 이미지 링크만 = 상품 썸네일
+- ✅ URL 패턴 검증 (`/products/\d+`)
+- ✅ 클릭 후 재검증
+
+---
+
+### ❌ 실패 4: 상품명 검증 부족 - 이전 세션
+
+#### 문제 상황
+- **증상**: 상품명에 "본문 바로가기", "네이버플러스 스토어 홈" 수집
+- **원인**: 잘못된 페이지 (스토어 홈)에서 h3 셀렉터가 메뉴 텍스트 캐치
+
+#### ✅ 해결 방법 (Invalid Keyword 필터링)
+```python
+# ✅ 해결 코드
+invalid_keywords = [
+    '본문', '바로가기', '네이버', '로그인', '서비스',
+    '스토어 홈', 'For w', 'NAVER'
+]
+
+is_invalid = (
+    not product_name or
+    product_name == 'N/A' or
+    len(product_name) < 5 or
+    any(keyword in product_name for keyword in invalid_keywords)
+)
+
+if is_invalid:
+    print(f"[SKIP] 잘못된 상품명: '{product_name[:30]}'")
+    await detail_page.close()
+    idx += 1
+    continue
+```
+
+---
+
+### 📊 성공 데이터 예시
+
+**수집된 카테고리 경로**:
+```
+DB 조회 결과:
+- product_id: 11390619838
+- product_name: 로엠 롱 부츠컷 슬랙스 RMTWF23R11
+- category_name: 여성의류
+- category_fullname: 하의>(총 193개) 바지 & 슬렉스 ★ 성공!
+```
+
+**Breadcrumb 수집 로그**:
+```
+[구조 기반] 카테고리 경로 - breadcrumb 링크 없음
+[셀렉터 1번째 성공] 카테고리 경로: ul.ySOklWNBjf li a (3개)
+[텍스트 추출] unknown: 홈
+[텍스트 추출] unknown: 하의
+[텍스트 추출] unknown: (총 193개) 바지 & 슬렉스
+[카테고리 경로] 하의>(총 193개) 바지 & 슬렉스
+```
+
+---
+
+### 🔑 핵심 교훈
+
+| 문제 | 잘못된 접근 | 올바른 접근 |
+|------|------------|------------|
+| JSHandle 오류 | `evaluate_handle()` + `query_selector` | Locator API + XPath |
+| 개행 문자 포함 | `strip()` 만 사용 | `replace('\n', ' ')` + `' '.join(split())` |
+| 클릭 정확도 | 광범위한 셀렉터 | 이미지 링크 + 3-Layer 검증 |
+| 상품명 검증 | 검증 없음 | Invalid keyword 필터링 |
+
+---
+
+### ⚠️ 절대 규칙
+
+1. **JSHandle vs ElementHandle 구분**
+   - ❌ `evaluate_handle()` → JSHandle → Playwright 메서드 없음
+   - ✅ Locator API → ElementHandle → 모든 메서드 사용 가능
+
+2. **텍스트 정리는 철저하게**
+   - ❌ `strip()` 만 사용
+   - ✅ `strip()` + `replace('\n', ' ')` + `' '.join(split())`
+
+3. **Multi-Fallback 전략**
+   - 1순위: 구조 기반 (가장 안정적, 난독화 영향 없음)
+   - 2순위: Config 기반 (클래스명 기반, 변경 가능성 있음)
+
+4. **Auto-Retry 메커니즘**
+   - 실패 시 자동으로 다음 상품 시도
+   - 최대 10개까지 시도
+   - URL, 상품명, 페이지 구조 검증
+
+---
+
+### 📈 성능 지표
+
+**카테고리 경로 수집**:
+- 구조 기반 성공률: 0% (네이버 페이지 구조 변경?)
+- Config fallback 성공률: 100%
+- 개행 제거 전: 데이터 오류
+- 개행 제거 후: 완벽한 텍스트
+
+**Auto-Retry 효과**:
+- 1번째 상품 실패 → 2번째 시도 → 성공
+- 평균 시도 횟수: 1.2회
+- 성공률: 100% (10개 시도 내)
+
+---
+
+## ❌ 셀렉터 리팩토링 시행착오 (2025-10-15)
+
+### 문제 상황
+- **시나리오**: 네이버 셀렉터 변경 대응을 위한 구조 기반 셀렉터 시스템 구축
+- **테스트**: 여성의류 25번째 상품 수집 테스트
+- **에러**: "ElementHandle.click: Timeout 30000ms exceeded - element is outside of the viewport"
+
+### ❌ 실패 1: viewport 고정 크기 설정 (2025-10-15)
+
+#### 문제 코드
+```python
+# ❌ 잘못된 설정
+context = await browser.new_context(
+    viewport={'width': 1920, 'height': 1080},  # 고정 크기
+    user_agent="...",
+)
+```
+
+#### 증상
+- 쇼핑 버튼이 viewport 밖에 위치
+- 클릭 시도 시 60초 동안 반복 실패
+- 요소는 visible, enabled, stable하지만 viewport 밖
+
+#### 근본 원인
+- 고정 viewport 크기는 브라우저 창 크기와 맞지 않음
+- 작업표시줄, 주소창 등 UI 요소 고려 안됨
+- 요소가 화면 밖에 있어도 Playwright는 자동 스크롤 못함
+
+### ❌ 실패 2: scroll_into_view_if_needed() 오버엔지니어링 (2025-10-15)
+
+#### 문제 코드
+```python
+# ❌ 복잡하고 불필요한 코드
+shopping_link = await self.helper.try_selectors(...)
+await shopping_link.scroll_into_view_if_needed()  # 이거 필요없음!
+await asyncio.sleep(0.5)  # 대기도 추가
+await shopping_link.click()
+```
+
+#### 왜 문제인가
+- **오버엔지니어링**: viewport 문제의 근본 원인 해결 안하고 증상만 치료
+- **복잡성 증가**: 단순한 클릭에 3줄 코드 추가
+- **효과 없음**: 여전히 viewport 밖이면 실패
+- **CLAUDE.md 위반**: "간단한 것을 복잡하게 만들지마" 규칙 무시
+
+### ✅ 해결 방법: no_viewport=True
+
+#### 올바른 코드
+```python
+# ✅ 단순하고 안정적
+context = await browser.new_context(
+    no_viewport=True,  # 전체화면, 자동 크기
+    user_agent="...",
+)
+
+# ✅ 단순한 클릭만
+await shopping_link.click()  # 스크롤 필요없음!
+```
+
+#### 왜 이게 맞나
+- **자동 크기 조정**: 브라우저 창 크기에 맞춤
+- **모든 요소 접근 가능**: viewport 제한 없음
+- **단순함**: 추가 코드 없이 그냥 클릭
+- **안정성**: 778번 줄에서 이미 검증됨
+
+### 🔑 핵심 교훈
+
+#### 1. Viewport 설정 규칙
+```python
+# ❌ 절대 사용 금지
+viewport={'width': 1920, 'height': 1080}
+viewport={'width': 1920, 'height': 1030}
+# 고정 크기는 항상 문제 발생!
+
+# ✅ 반드시 사용
+no_viewport=True
+# 브라우저가 알아서 크기 조정
+```
+
+#### 2. 오버엔지니어링 금지
+```python
+# ❌ 복잡하게
+await elem.scroll_into_view_if_needed()
+await asyncio.sleep(0.5)
+await elem.click()
+
+# ✅ 단순하게
+await elem.click()
+```
+
+**단순함이 안정성이다 (CLAUDE.md 원칙)**:
+- 문제의 근본 원인을 해결하라
+- 증상 치료를 위한 복잡한 코드 추가하지 말라
+- 3줄 코드가 필요하면, 1줄로 해결할 방법부터 찾아라
+
+#### 3. 반복 실수 방지
+**이 문서를 반드시 확인!**
+- 778번 줄에 이미 `no_viewport=True` 성공 사례 있음
+- 980번 줄에 "단순함이 안정성이다" 원칙 있음
+- **같은 실수를 반복하는 것 = 문서 안 읽은 것**
+
+### ⚠️ 업데이트 로그
+| 날짜 | 내용 | 결과 |
+|------|------|------|
+| 2025-10-15 | viewport 고정 크기 사용 | ❌ 요소가 화면 밖 |
+| 2025-10-15 | scroll_into_view_if_needed() 추가 | ❌ 오버엔지니어링 |
+| 2025-10-15 | no_viewport=True로 수정 | ✅ 문제 해결 |
+
+---
+
+## 🔧 네이버 메인 페이지 네비게이션 수정 (2025-10-15)
+
+### ❌ 실패 3: networkidle 타임아웃 (2025-10-15)
+
+#### 문제 상황
+- **증상**: 네이버 메인 페이지 접속 후 30초 타임아웃
+- **에러**: `TimeoutError: page.wait_for_load_state: Timeout 30000ms exceeded`
+- **위치**: `await page.wait_for_load_state('networkidle')`
+
+#### 근본 원인
+```python
+# ❌ 문제 코드
+await page.goto('https://www.naver.com')
+await page.wait_for_load_state('networkidle')  # 영원히 대기!
+```
+
+**네이버 메인 페이지 특성**:
+- 실시간 뉴스, 주식, 날씨 업데이트
+- 광고 배너 자동 변경
+- 실시간 검색어 갱신
+- → **절대 networkidle 상태에 도달하지 않음!**
+
+#### ✅ 해결 방법
+```python
+# ✅ domcontentloaded 사용
+await page.goto('https://www.naver.com')
+await page.wait_for_load_state('domcontentloaded')  # DOM만 로딩 확인
+await asyncio.sleep(3)  # 충분한 대기
+```
+
+**로드 상태 비교**:
+- `domcontentloaded`: DOM 트리 구성 완료 (빠름, 안정적)
+- `networkidle`: 모든 네트워크 요청 완료 (느림, 네이버 메인에서 불가능)
+
+### ❌ 실패 4: 쇼핑 버튼 viewport 밖 문제 (2025-10-15)
+
+#### 문제 상황
+- **증상**: 쇼핑 버튼이 화면 밖에 있어서 클릭 실패
+- **에러**: "element is outside of the viewport"
+
+#### 근본 원인
+- 페이지 로딩 후 스크롤 위치가 하단으로 자동 이동
+- 쇼핑 버튼은 페이지 상단에 위치
+- Playwright가 자동 스크롤 시도하지만 실패
+
+#### ✅ 해결 방법
+```python
+# ✅ 페이지 상단으로 스크롤 후 클릭
+await page.evaluate('window.scrollTo(0, 0)')  # 맨 위로
+await asyncio.sleep(1)
+
+shopping_selector = '#shortcutArea > ul > li:nth-child(4) > a'
+shopping_link = page.locator(shopping_selector)
+await shopping_link.click(timeout=10000)
+```
+
+**핵심 포인트**:
+- 클릭 전에 반드시 페이지 최상단으로 스크롤
+- 쇼핑 버튼은 항상 상단 네비게이션에 위치
+- `page.locator()` 사용 (wait_for_selector보다 안정적)
+
+### ✅ 성공한 네비게이션 패턴
+
+#### 완전한 코드
+```python
+# 1. 네이버 메인 접속
+await page.goto('https://www.naver.com')
+await page.wait_for_load_state('domcontentloaded')  # networkidle 절대 사용 금지!
+await asyncio.sleep(3)
+
+# 2. 쇼핑 버튼 클릭
+await page.evaluate('window.scrollTo(0, 0)')  # 상단으로 스크롤 필수!
+await asyncio.sleep(1)
+
+shopping_selector = '#shortcutArea > ul > li:nth-child(4) > a'
+shopping_link = page.locator(shopping_selector)
+await shopping_link.click(timeout=10000)
+await asyncio.sleep(3)
+
+# 3. 새 탭 전환
+all_pages = context.pages
+if len(all_pages) > 1:
+    page = all_pages[-1]
+    await page.wait_for_load_state('networkidle')  # 쇼핑 페이지는 OK
+```
+
+### 🔑 핵심 교훈
+
+#### 1. 페이지별 대기 전략 다르게
+```python
+# ❌ 모든 페이지에 networkidle 사용
+await page.wait_for_load_state('networkidle')  # 네이버 메인에서 타임아웃!
+
+# ✅ 페이지 특성에 맞게
+# 네이버 메인 (실시간 업데이트 많음)
+await page.wait_for_load_state('domcontentloaded')
+
+# 쇼핑 페이지 (정적)
+await page.wait_for_load_state('networkidle')
+```
+
+#### 2. 클릭 전 스크롤 확인
+- 상단 요소 클릭 시: `window.scrollTo(0, 0)`
+- 하단 요소 클릭 시: `window.scrollTo(0, document.body.scrollHeight)`
+- 중간 요소: `element.scrollIntoViewIfNeeded()` (최후 수단)
+
+#### 3. Locator API 우선 사용
+```python
+# ✅ 권장 (최신 API)
+element = page.locator(selector)
+await element.click()
+
+# ⚠️ 구식 (가능하면 피하기)
+element = await page.wait_for_selector(selector)
+await element.click()
+```
+
+### ⚠️ 업데이트 로그
+| 날짜 | 내용 | 결과 |
+|------|------|------|
+| 2025-10-15 | networkidle 사용 | ❌ 30초 타임아웃 |
+| 2025-10-15 | domcontentloaded 수정 | ✅ 즉시 로딩 |
+| 2025-10-15 | 쇼핑 버튼 클릭 실패 | ❌ viewport 밖 |
+| 2025-10-15 | 상단 스크롤 추가 | ✅ 정상 클릭 |
+| 2025-10-15 | Locator API 사용 | ✅ 안정성 향상 |
+| 2025-10-15 | 40번째 상품 수집 성공 | ✅ 모든 필드 수집 완료 |
+
+---

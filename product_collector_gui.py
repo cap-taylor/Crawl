@@ -514,11 +514,30 @@ class ProductCollectorGUI:
         sys.stderr = LogRedirector(self._log)
 
     def _copy_log(self):
-        """로그 내용을 클립보드에 복사"""
+        """로그 내용을 클립보드에 복사 (WSL 환경 대응)"""
+        import subprocess
+        import platform
+
         log_content = self.log_text.get("1.0", "end-1c")
-        self.window.clipboard_clear()
-        self.window.clipboard_append(log_content)
-        self._log("로그가 클립보드에 복사되었습니다.")
+
+        try:
+            # WSL 환경에서는 clip.exe를 사용해 Windows 클립보드에 직접 복사
+            if platform.system() == 'Linux' and 'microsoft' in platform.uname().release.lower():
+                # WSL 환경 감지
+                process = subprocess.run(
+                    ['clip.exe'],
+                    input=log_content.encode('utf-8'),
+                    check=True,
+                    capture_output=True
+                )
+                self._log("로그가 클립보드에 복사되었습니다. (Windows 클립보드)")
+            else:
+                # 일반 Linux/Mac/Windows 환경
+                self.window.clipboard_clear()
+                self.window.clipboard_append(log_content)
+                self._log("로그가 클립보드에 복사되었습니다.")
+        except Exception as e:
+            self._log(f"클립보드 복사 실패: {str(e)}")
 
     def _stop_crawling(self):
         """크롤링 중지"""

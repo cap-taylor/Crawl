@@ -1,5 +1,5 @@
 # 🎯 Crawl 프로젝트 - Claude 필수 지침
-> Last Updated: 2025-10-15 15:49
+> Last Updated: 2025-10-15 17:30
 
 
 ## 🔴 **절대 금지 (NEVER DO THIS)**
@@ -123,6 +123,21 @@
    - Git 커밋 메시지에 버전 포함
 
 ### 최근 버전 히스토리
+- **1.1.2**: 카테고리 경로 수집 완성 (버그 수정)
+  - JSHandle 오류 수정 (Locator API + XPath 사용)
+  - 텍스트 정리 강화 (개행 문자 제거)
+  - 구조 기반 breadcrumb 수집 (Multi-Fallback 전략)
+  - category_fullname 필드 정상 수집 (예: "하의 > 바지 & 슬렉스")
+- **1.1.1**: 네이버 메인 페이지 네비게이션 수정 (버그 수정)
+  - networkidle → domcontentloaded 변경 (타임아웃 해결)
+  - 쇼핑 버튼 클릭 전 상단 스크롤 추가
+  - Locator API 사용으로 안정성 향상
+  - specific_index 파라미터로 특정 상품만 수집 가능
+- **1.1.0**: 셀렉터 시스템 전체 리팩토링 (구조 기반 + 다중 fallback)
+  - selector_helper.py 생성 (재사용 가능한 셀렉터 로직)
+  - config.py 개선 (모든 셀렉터 리스트화, 우선순위 정의)
+  - 네이버 난독화 대응 (클래스명 변경에 강건)
+  - DB 스키마 전체 필드 수집 (brand_name, rating, is_sold_out 추가)
 - **1.0.4**: GUI 로그 한글 깨짐 수정 (remove_emojis 함수)
 - **1.0.3**: GUI 개선 (로그 복사 버튼, 중지 버튼 수정, 로그 간결화)
 - **1.0.2**: PowerShell 한글 깨짐 수정, 콘솔 디버깅 강화

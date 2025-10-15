@@ -238,20 +238,22 @@ class DatabaseConnector:
             search_tags = detail_info.get('search_tags', [])
             thumbnail_url = product_info.get('thumbnail_url', None)
             is_sold_out = False
+            category_fullname = detail_info.get('category_fullname', category_name)  # 전체 카테고리 경로
 
-            # 상품 데이터 저장 (UPSERT) - category_id 제거
+            # 상품 데이터 저장 (UPSERT) - category_fullname 추가
             cursor.execute(
                 """
                 INSERT INTO products (
-                    product_id, category_name, product_name,
+                    product_id, category_name, category_fullname, product_name,
                     brand_name, price, discount_rate, review_count, rating,
                     search_tags, product_url, thumbnail_url, is_sold_out,
                     crawled_at, updated_at
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (product_id)
                 DO UPDATE SET
                     category_name = EXCLUDED.category_name,
+                    category_fullname = EXCLUDED.category_fullname,
                     product_name = EXCLUDED.product_name,
                     brand_name = EXCLUDED.brand_name,
                     price = EXCLUDED.price,
@@ -265,7 +267,7 @@ class DatabaseConnector:
                     updated_at = EXCLUDED.updated_at
                 """,
                 (
-                    product_id, category_name, product_name,
+                    product_id, category_name, category_fullname, product_name,
                     brand_name, price, discount_rate, review_count, rating,
                     search_tags, product_url, thumbnail_url, is_sold_out,
                     datetime.now(), datetime.now()
