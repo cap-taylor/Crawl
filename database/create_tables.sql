@@ -1,8 +1,9 @@
 -- =====================================================
 -- 네이버 쇼핑 크롤러 데이터베이스 스키마
--- Version: 1.0.1
--- Date: 2025-09-26
+-- Version: 1.0.2
+-- Date: 2025-10-15
 -- Database: PostgreSQL 13+
+-- Description: 실제 DB 구조와 동기화 (category_id FK 제거)
 -- =====================================================
 
 -- 데이터베이스 생성 (이미 생성되어 있다면 스킵)
@@ -27,45 +28,25 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 -- Categories 테이블 (카테고리 정보)
 -- =====================================================
 CREATE TABLE IF NOT EXISTS categories (
-    category_id SERIAL PRIMARY KEY,                   -- 카테고리 고유 ID
-    category_name VARCHAR(100) NOT NULL,              -- 카테고리명
-    category_level INT NOT NULL,                      -- 계층 레벨 (1: 대, 2: 중, 3: 소)
-    parent_category_id INT,                           -- 부모 카테고리 ID
-    category_url TEXT NOT NULL,                       -- 네이버 쇼핑 카테고리 URL
-    category_path TEXT,                                -- 전체 카테고리 경로 (예: "패션/여성의류/원피스")
-    is_active BOOLEAN DEFAULT true,                   -- 활성 상태
-    crawled_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,   -- 크롤링 시간
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,   -- 업데이트 시간
-
-    CONSTRAINT fk_parent_category
-        FOREIGN KEY (parent_category_id)
-        REFERENCES categories(category_id) ON DELETE CASCADE
+    category_name VARCHAR(100) PRIMARY KEY,           -- 카테고리명 (예: "여성의류")
+    category_id VARCHAR(20),                          -- 네이버 카테고리 ID (예: "10000107")
+    is_active BOOLEAN DEFAULT false,                  -- 활성 상태
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP    -- 생성 시간
 );
-
--- Categories 인덱스
-CREATE INDEX IF NOT EXISTS idx_category_level ON categories(category_level);
-CREATE INDEX IF NOT EXISTS idx_parent_category ON categories(parent_category_id);
-CREATE INDEX IF NOT EXISTS idx_category_name ON categories(category_name);
 
 -- Categories 코멘트
 COMMENT ON TABLE categories IS '네이버 쇼핑 카테고리 정보';
-COMMENT ON COLUMN categories.category_id IS '카테고리 고유 ID';
-COMMENT ON COLUMN categories.category_name IS '카테고리명';
-COMMENT ON COLUMN categories.category_level IS '계층 레벨 (1: 대카테고리, 2: 중카테고리, 3: 소카테고리)';
-COMMENT ON COLUMN categories.parent_category_id IS '부모 카테고리 ID';
-COMMENT ON COLUMN categories.category_url IS '네이버 쇼핑 카테고리 URL';
-COMMENT ON COLUMN categories.category_path IS '전체 카테고리 경로';
+COMMENT ON COLUMN categories.category_name IS '카테고리명 (Primary Key)';
+COMMENT ON COLUMN categories.category_id IS '네이버 카테고리 ID';
 COMMENT ON COLUMN categories.is_active IS '활성 상태';
-COMMENT ON COLUMN categories.crawled_at IS '크롤링 시간';
-COMMENT ON COLUMN categories.updated_at IS '업데이트 시간';
+COMMENT ON COLUMN categories.created_at IS '생성 시간';
 
 -- =====================================================
 -- Products 테이블 (상품 정보)
 -- =====================================================
 CREATE TABLE IF NOT EXISTS products (
     product_id VARCHAR(255) PRIMARY KEY,              -- 네이버 상품 ID
-    category_id INT NOT NULL,                         -- 카테고리 ID (FK)
-    category_name VARCHAR(100),                       -- 카테고리명 (캐시용)
+    category_name VARCHAR(100),                       -- 카테고리명 (예: "여성의류")
     product_name TEXT NOT NULL,                       -- 상품명
     brand_name VARCHAR(100),                          -- 브랜드명
     price INTEGER,                                     -- 가격 (원)
@@ -77,24 +58,18 @@ CREATE TABLE IF NOT EXISTS products (
     thumbnail_url TEXT,                                -- 썸네일 이미지 URL
     is_sold_out BOOLEAN DEFAULT false,                -- 품절 여부
     crawled_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,   -- 크롤링 시간
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,   -- 업데이트 시간
-
-    CONSTRAINT fk_category
-        FOREIGN KEY (category_id)
-        REFERENCES categories(category_id) ON DELETE CASCADE
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP    -- 업데이트 시간
 );
 
 -- Products 인덱스
-CREATE INDEX IF NOT EXISTS idx_product_category ON products(category_id);
 CREATE INDEX IF NOT EXISTS idx_product_name ON products(product_name);
 CREATE INDEX IF NOT EXISTS idx_product_price ON products(price);
 CREATE INDEX IF NOT EXISTS idx_crawled_at ON products(crawled_at);
 
 -- Products 코멘트
 COMMENT ON TABLE products IS '네이버 쇼핑 상품 정보';
-COMMENT ON COLUMN products.product_id IS '네이버 상품 ID';
-COMMENT ON COLUMN products.category_id IS '카테고리 ID (FK)';
-COMMENT ON COLUMN products.category_name IS '카테고리명 (캐시용)';
+COMMENT ON COLUMN products.product_id IS '네이버 상품 ID (Primary Key)';
+COMMENT ON COLUMN products.category_name IS '카테고리명 (Foreign Key 없음)';
 COMMENT ON COLUMN products.product_name IS '상품명';
 COMMENT ON COLUMN products.brand_name IS '브랜드명';
 COMMENT ON COLUMN products.price IS '가격 (원)';
@@ -148,33 +123,32 @@ SELECT 'Crawl_History 테이블', COUNT(*) FROM crawl_history;
 -- 유용한 쿼리들
 -- =====================================================
 
--- 1. 카테고리 계층 구조 조회
--- WITH RECURSIVE category_tree AS (
---     SELECT category_id, category_name, category_level, parent_category_id,
---            category_name::text as path
---     FROM categories
---     WHERE parent_category_id IS NULL
---     UNION ALL
---     SELECT c.category_id, c.category_name, c.category_level, c.parent_category_id,
---            ct.path || ' > ' || c.category_name
---     FROM categories c
---     JOIN category_tree ct ON c.parent_category_id = ct.category_id
--- )
--- SELECT * FROM category_tree ORDER BY path;
-
--- 2. 카테고리별 상품 수 통계
--- SELECT c.category_name, COUNT(p.product_id) as product_count
--- FROM categories c
--- LEFT JOIN products p ON c.category_id = p.category_id
--- GROUP BY c.category_id, c.category_name
+-- 1. 카테고리별 상품 수 통계
+-- SELECT category_name, COUNT(*) as product_count
+-- FROM products
+-- GROUP BY category_name
 -- ORDER BY product_count DESC;
 
--- 3. 최근 크롤링 이력
+-- 2. 최근 크롤링 이력
 -- SELECT * FROM crawl_history
 -- ORDER BY start_time DESC
 -- LIMIT 10;
 
--- 4. 오늘 크롤링된 상품 수
+-- 3. 오늘 크롤링된 상품 수
 -- SELECT COUNT(*) as today_products
 -- FROM products
 -- WHERE DATE(crawled_at) = CURRENT_DATE;
+
+-- 4. 검색태그가 많은 상품 TOP 10
+-- SELECT product_id, product_name, category_name,
+--        array_length(search_tags, 1) as tag_count
+-- FROM products
+-- WHERE search_tags IS NOT NULL
+-- ORDER BY tag_count DESC
+-- LIMIT 10;
+
+-- 5. 카테고리 목록 조회
+-- SELECT category_name, category_id, created_at
+-- FROM categories
+-- WHERE is_active = true
+-- ORDER BY category_name;

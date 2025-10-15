@@ -1,5 +1,5 @@
 # 🎯 Crawl 프로젝트 - Claude 필수 지침
-> Last Updated: 2025-10-15 14:50
+> Last Updated: 2025-10-15 15:00
 
 
 ## 🔴 **절대 금지 (NEVER DO THIS)**
@@ -121,6 +121,34 @@
 - Python: `python3` (NOT `python`)
 - 경로: `/home/dino/MyProjects/Crawl`
 - Windows 접근: `\\wsl.localhost\Ubuntu-22.04\home\dino\MyProjects\Crawl`
+
+### PostgreSQL 데이터베이스
+- **데이터베이스명**: naver
+- **사용자**: postgres
+- **비밀번호**: `.env` 파일에서 `DB_PASSWORD` 설정
+- **테이블**: categories, products, crawl_history
+
+### 데이터베이스 스키마 구조
+**중요**: SQL 스키마 파일(`database/create_tables.sql`)은 실제 DB 구조와 동기화됨
+
+**categories 테이블**:
+- `category_name` VARCHAR(100) PRIMARY KEY (예: "여성의류")
+- `category_id` VARCHAR(20) (네이버 ID, 예: "10000107")
+- `is_active` BOOLEAN DEFAULT false
+- `created_at` TIMESTAMP
+
+**products 테이블**:
+- `product_id` VARCHAR(255) PRIMARY KEY
+- `category_name` VARCHAR(100) (**FK 없음** - 단순 참조)
+- `product_name`, `brand_name`, `price`, `discount_rate`
+- `review_count`, `rating`, `search_tags TEXT[]`
+- `product_url`, `thumbnail_url`, `is_sold_out`
+- `crawled_at`, `updated_at`
+
+**설계 특징**:
+- ❌ Foreign Key 제약 조건 없음 (유연성 우선)
+- ✅ `category_name`으로 직접 조인
+- ✅ `search_tags`는 PostgreSQL 배열 타입
 
 ---
 
