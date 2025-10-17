@@ -77,36 +77,39 @@ SELECTORS = {
     ],
 
     'price': [
-        'span.price em',                         # 클래스 기반 (1순위)
-        'strong[class*="price"]',                # 패턴 기반 (2순위)
-        '[class*="total_price"]',                # 패턴 기반 (3순위)
-        'em[class*="salePrice"]',                # 패턴 기반 (4순위)
-        'em:has-text("원")',                     # 텍스트 기반 (5순위)
+        'strong[class*="price"] em',             # 네이버 스토어 (1순위)
+        'div[class*="_price"] em',               # 상품 가격 영역 (2순위)
+        'span[class*="lowestPrice"]',            # 최저가 (3순위)
+        'strong em:has-text("원")',              # 강조 + 원 (4순위)
+        'em[class*="salePrice"]',                # 할인가 (5순위)
+        'span.price em',                         # 기본 (6순위)
     ],
 
     'discount_rate': [
-        'span[class*="discount"]',               # 패턴 기반 (1순위)
-        'em[class*="discount"]',                 # 패턴 기반 (2순위)
-        'div:has-text("%")',                     # 텍스트 기반 (3순위)
+        'span[class*="discount"]:has-text("%")', # 할인율 + % (1순위)
+        'strong:has-text("%")',                  # 강조 + % (2순위)
+        'em[class*="discount"]:has-text("%")',   # em + 할인 (3순위)
     ],
 
     'review_count': [
-        'span[class*="reviewCount"]',            # 패턴 기반 (1순위)
-        'em[class*="review_count"]',             # 패턴 기반 (2순위)
-        'span:has-text("리뷰")',                 # 텍스트 기반 (3순위)
+        'em[class*="count"]',                    # 리뷰 카운트 (1순위)
+        'span[class*="_count"]',                 # 카운트 (2순위)
+        'a:has-text("리뷰") em',                 # 리뷰 링크 내 숫자 (3순위)
     ],
 
     'rating': [
-        'span[class*="rating"]',                 # 패턴 기반 (1순위)
-        'em[class*="star"]',                     # 패턴 기반 (2순위)
-        'div[class*="rate"]',                    # 패턴 기반 (3순위)
+        'span[class*="_rating"]',                # 평점 (1순위)
+        'em[class*="rating"]',                   # 평점 em (2순위)
+        'strong[class*="star"]',                 # 별점 (3순위)
+        'span:has-text("평점")',                 # 평점 텍스트 (4순위)
     ],
 
     'brand_name': [
-        'span[class*="brand"]',                  # 패턴 기반 (1순위)
-        'a[class*="brand"]',                     # 패턴 기반 (2순위)
-        'div[class*="seller"]',                  # 패턴 기반 (3순위)
-        'span[class*="store"]',                  # 패턴 기반 (4순위)
+        'a[class*="seller"]',                    # 판매자 링크 (1순위)
+        'span[class*="seller"]',                 # 판매자 (2순위)
+        'a[class*="brand"]',                     # 브랜드 링크 (3순위)
+        'div[class*="shopName"]',                # 상점명 (4순위)
+        'span[class*="store"]',                  # 스토어 (5순위)
     ],
 
     'thumbnail': [

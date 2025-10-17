@@ -1,5 +1,5 @@
 # 🎯 Crawl 프로젝트 - Claude 필수 지침
-> Last Updated: 2025-10-17 20:09
+> Last Updated: 2025-10-17 21:05
 
 
 ## 🔴 **절대 금지 (NEVER DO THIS)**

@@ -817,11 +817,13 @@ class ProductCollectorGUI:
             actual_count = None if is_infinite else product_count
 
             # V2 크롤러 사용 (점진적 수집 최적화)
+            resume_mode = self.resume_var.get()
             self.crawler = ProgressiveCrawler(
                 product_count=actual_count,
                 headless=False,
                 category_name=category_name,
-                category_id=category_id
+                category_id=category_id,
+                resume=resume_mode
             )
 
             # 크롤러의 print를 가로채서 로그로 리다이렉트

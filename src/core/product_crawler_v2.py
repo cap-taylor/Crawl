@@ -20,7 +20,7 @@ from src.utils.selector_helper import SelectorHelper
 
 class ProgressiveCrawler:
     def __init__(self, headless=False, product_count: Optional[int] = None,
-                 category_name: str = "여성의류", category_id: str = "10000107"):
+                 category_name: str = "여성의류", category_id: str = "10000107", resume: bool = False):
         self.headless = headless
         self.product_count = product_count  # None이면 무한 모드
         self.category_name = category_name
@@ -30,6 +30,7 @@ class ProgressiveCrawler:
         self.helper = SelectorHelper(debug=False)
         self.history_id = None
         self.db_connector = None
+        self.resume = resume  # 재개 모드
 
         # 중복 방지용 Set
         self.seen_product_ids: Set[str] = set()
@@ -202,12 +203,56 @@ class ProgressiveCrawler:
         detail_info['detail_product_name'] = await self.helper.extract_text(elem, "상품명")
 
         # 브랜드
+        brand_text = None
         elem = await self.helper.try_selectors(page, SELECTORS['brand_name'], "브랜드")
-        detail_info['brand_name'] = await self.helper.extract_text(elem, "브랜드")
+        if elem:
+            brand_text = await self.helper.extract_text(elem, "브랜드")
 
-        # 가격
+        # 실패 시: "브랜드" 텍스트 근처 찾기
+        if not brand_text:
+            try:
+                brand_label = await page.query_selector('dt:has-text("브랜드"), th:has-text("브랜드")')
+                if brand_label:
+                    sibling = await brand_label.evaluate_handle('el => el.nextElementSibling')
+                    if sibling:
+                        brand_text = await sibling.inner_text()
+            except:
+                pass
+
+        detail_info['brand_name'] = brand_text
+
+        # 가격 - 다중 전략
+        price_text = None
         elem = await self.helper.try_selectors(page, SELECTORS['price'], "가격")
-        price_text = await self.helper.extract_text(elem, "가격")
+        if elem:
+            price_text = await self.helper.extract_text(elem, "가격")
+
+        # Fallback 1: "원"이 포함된 strong em 찾기
+        if not price_text or len(price_text) > 100:
+            try:
+                price_elems = await page.query_selector_all('strong em')
+                for p_elem in price_elems:
+                    text = await p_elem.inner_text()
+                    if text and '원' in text and len(text) < 20:
+                        # 숫자가 있는지 확인
+                        if any(c.isdigit() for c in text):
+                            price_text = text
+                            break
+            except:
+                pass
+
+        # Fallback 2: 가격 패턴 (숫자,숫자원)
+        if not price_text:
+            try:
+                all_text = await page.inner_text('body')
+                import re
+                prices = re.findall(r'(\d{1,3}(?:,\d{3})+원)', all_text)
+                if prices:
+                    # 가장 큰 금액 (상품 가격일 가능성 높음)
+                    price_text = max(prices, key=lambda x: int(x.replace(',', '').replace('원', '')))
+            except:
+                pass
+
         detail_info['detail_price'] = self.helper.clean_price(price_text)
 
         # 할인율
@@ -215,14 +260,46 @@ class ProgressiveCrawler:
         discount_text = await self.helper.extract_text(elem, "할인율")
         detail_info['discount_rate'] = self.helper.clean_discount_rate(discount_text)
 
-        # 리뷰 수
+        # 리뷰 수 - 다중 전략
+        review_text = None
         elem = await self.helper.try_selectors(page, SELECTORS['review_count'], "리뷰 수")
-        review_text = await self.helper.extract_text(elem, "리뷰 수")
+        if elem:
+            review_text = await self.helper.extract_text(elem, "리뷰 수")
+
+        # Fallback: "리뷰"가 포함된 텍스트에서 숫자 찾기
+        if not review_text:
+            try:
+                all_text = await page.inner_text('body')
+                import re
+                # "리뷰 123" 또는 "123리뷰" 패턴
+                match = re.search(r'리뷰\s*(\d+)|(\d+)\s*리뷰', all_text)
+                if match:
+                    review_text = match.group(1) or match.group(2)
+            except:
+                pass
+
         detail_info['detail_review_count'] = self.helper.clean_review_count(review_text)
 
-        # 평점
+        # 평점 - 다중 전략
+        rating_text = None
         elem = await self.helper.try_selectors(page, SELECTORS['rating'], "평점")
-        rating_text = await self.helper.extract_text(elem, "평점")
+        if elem:
+            text = await self.helper.extract_text(elem, "평점")
+            # "평점"이라는 단어만 있으면 무시
+            if text and text != "평점" and any(c.isdigit() for c in text):
+                rating_text = text
+
+        # Fallback: "평점 X.X" 패턴 찾기
+        if not rating_text:
+            try:
+                all_text = await page.inner_text('body')
+                import re
+                match = re.search(r'평점\s*(\d+\.\d+)', all_text)
+                if match:
+                    rating_text = match.group(1)
+            except:
+                pass
+
         detail_info['rating'] = self.helper.clean_rating(rating_text)
 
         # 검색태그
@@ -290,7 +367,7 @@ class ProgressiveCrawler:
         # DB 세션 시작
         db = DatabaseConnector()
         db.connect()
-        self.history_id = db.start_crawl_session(self.category_name, resume=False)
+        self.history_id = db.start_crawl_session(self.category_name, resume=self.resume)
         db.close()
 
         async with async_playwright() as p:
