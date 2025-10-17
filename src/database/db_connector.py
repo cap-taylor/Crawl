@@ -306,6 +306,179 @@ class DatabaseConnector:
         print(f"[DB] 일괄 저장 완료: 저장 {results['saved']}개 | 스킵 {results['skipped']}개 | 실패 {results['failed']}개")
         return results
 
+    def get_last_crawl_progress(self, category_name: str) -> Optional[int]:
+        """
+        특정 카테고리의 마지막 크롤링 진행 상황 조회
+
+        Args:
+            category_name: 카테고리 이름 (예: "남성의류")
+
+        Returns:
+            int: 마지막 수집 상품 인덱스 (0-based), 없으면 None
+        """
+        cursor = self.conn.cursor()
+
+        try:
+            # 해당 카테고리의 가장 최근 진행 중(paused) 또는 완료(completed) 크롤링 조회
+            cursor.execute(
+                """
+                SELECT last_product_index, status, total_products
+                FROM crawl_history
+                WHERE category_name = %s
+                  AND crawl_type = 'product'
+                  AND status IN ('paused', 'running')
+                ORDER BY start_time DESC
+                LIMIT 1
+                """,
+                (category_name,)
+            )
+            result = cursor.fetchone()
+
+            if result:
+                last_index, status, total_products = result
+                print(f"[DB] 재개 지점 발견: {category_name} - {last_index + 1}번째 상품부터 (상태: {status}, 수집: {total_products}개)")
+                return last_index
+            else:
+                print(f"[DB] 재개 지점 없음: {category_name} - 처음부터 시작")
+                return None
+
+        except Exception as e:
+            print(f"[DB] 진행 상황 조회 실패: {e}")
+            return None
+        finally:
+            cursor.close()
+
+    def start_crawl_session(self, category_name: str, resume: bool = False) -> Optional[int]:
+        """
+        크롤링 세션 시작 및 history_id 반환
+
+        Args:
+            category_name: 카테고리 이름
+            resume: True면 재개, False면 새로 시작
+
+        Returns:
+            int: history_id (진행 상황 업데이트용), 실패 시 None
+        """
+        cursor = self.conn.cursor()
+
+        try:
+            if resume:
+                # 기존 세션 찾기
+                cursor.execute(
+                    """
+                    SELECT history_id, last_product_index
+                    FROM crawl_history
+                    WHERE category_name = %s
+                      AND crawl_type = 'product'
+                      AND status IN ('paused', 'running')
+                    ORDER BY start_time DESC
+                    LIMIT 1
+                    """,
+                    (category_name,)
+                )
+                result = cursor.fetchone()
+
+                if result:
+                    history_id, last_index = result
+                    # 세션 재개 (status를 running으로)
+                    cursor.execute(
+                        """
+                        UPDATE crawl_history
+                        SET status = 'running'
+                        WHERE history_id = %s
+                        """,
+                        (history_id,)
+                    )
+                    self.conn.commit()
+                    print(f"[DB] 세션 재개: history_id={history_id}, {last_index + 1}번째 상품부터")
+                    return history_id
+                else:
+                    print(f"[DB] 재개할 세션 없음 - 새 세션 시작")
+                    resume = False
+
+            # 새 세션 시작
+            cursor.execute(
+                """
+                INSERT INTO crawl_history (
+                    crawl_type, category_name, start_time, status
+                )
+                VALUES (%s, %s, %s, %s)
+                RETURNING history_id
+                """,
+                ('product', category_name, datetime.now(), 'running')
+            )
+            history_id = cursor.fetchone()[0]
+            self.conn.commit()
+            print(f"[DB] 새 세션 시작: history_id={history_id}, 카테고리={category_name}")
+            return history_id
+
+        except Exception as e:
+            print(f"[DB] 세션 시작 실패: {e}")
+            self.conn.rollback()
+            return None
+        finally:
+            cursor.close()
+
+    def update_crawl_progress(self, history_id: int, current_index: int, total_products: int):
+        """
+        크롤링 진행 상황 업데이트
+
+        Args:
+            history_id: 세션 ID
+            current_index: 현재 수집 중인 상품 인덱스 (0-based)
+            total_products: 총 수집된 상품 수
+        """
+        cursor = self.conn.cursor()
+
+        try:
+            cursor.execute(
+                """
+                UPDATE crawl_history
+                SET last_product_index = %s,
+                    total_products = %s
+                WHERE history_id = %s
+                """,
+                (current_index, total_products, history_id)
+            )
+            self.conn.commit()
+
+        except Exception as e:
+            print(f"[DB] 진행 상황 업데이트 실패: {e}")
+            self.conn.rollback()
+        finally:
+            cursor.close()
+
+    def end_crawl_session(self, history_id: int, status: str = 'completed', error_message: Optional[str] = None):
+        """
+        크롤링 세션 종료
+
+        Args:
+            history_id: 세션 ID
+            status: 'completed', 'failed', 'paused'
+            error_message: 오류 메시지 (선택)
+        """
+        cursor = self.conn.cursor()
+
+        try:
+            cursor.execute(
+                """
+                UPDATE crawl_history
+                SET end_time = %s,
+                    status = %s,
+                    error_message = %s
+                WHERE history_id = %s
+                """,
+                (datetime.now(), status, error_message, history_id)
+            )
+            self.conn.commit()
+            print(f"[DB] 세션 종료: history_id={history_id}, 상태={status}")
+
+        except Exception as e:
+            print(f"[DB] 세션 종료 실패: {e}")
+            self.conn.rollback()
+        finally:
+            cursor.close()
+
 
 # 간편 함수들
 def save_to_database(category_name: str, products_list: List[Dict], skip_duplicates: bool = True) -> Dict[str, int]:

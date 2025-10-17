@@ -20,7 +20,7 @@ from src.utils.selector_helper import SelectorHelper
 class WomensClothingManualCaptcha:
     def __init__(self, headless=False, product_count: Optional[int] = 1, enable_screenshot=False,
                  category_name: str = "여성의류", category_id: str = "10000107", debug_selectors: bool = False,
-                 specific_index: Optional[int] = None):  # 특정 인덱스만 수집
+                 specific_index: Optional[int] = None, resume: bool = False):  # 재개 옵션 추가
         self.headless = headless
         self.product_count = product_count  # 수집할 상품 개수 (None이면 무한)
         self.enable_screenshot = enable_screenshot  # 스크린샷 활성화 여부
@@ -30,6 +30,10 @@ class WomensClothingManualCaptcha:
         self.should_stop = False  # 중지 플래그 (GUI에서 설정)
         self.helper = SelectorHelper(debug=debug_selectors)  # 셀렉터 Helper
         self.specific_index = specific_index  # 특정 인덱스만 수집 (0-based)
+        self.resume = resume  # 재개 여부
+        self.history_id = None  # DB 세션 ID
+        self.start_index = 0  # 시작 인덱스 (재개 시 변경됨)
+        self.db_connector = None  # DB 커넥션 재사용 (메모리 누수 방지)
 
     async def wait_for_captcha_solve(self, page):
         """캡차 해결 대기 - 15초 고정"""
@@ -53,12 +57,37 @@ class WomensClothingManualCaptcha:
 
     async def crawl_with_manual_captcha(self):
         """수동 캡차 해결 방식으로 크롤링"""
+        # DB 세션 시작 (재개 또는 신규)
+        from src.database.db_connector import DatabaseConnector
+        db = DatabaseConnector()
+        db.connect()
+
+        try:
+            # 재개 모드 확인
+            if self.resume:
+                last_index = db.get_last_crawl_progress(self.category_name)
+                if last_index is not None:
+                    self.start_index = last_index + 1  # 다음 상품부터 시작
+                    print(f"\n[재개] {self.start_index + 1}번째 상품부터 수집 시작")
+                else:
+                    print(f"\n[신규] 재개할 세션 없음 - 처음부터 시작")
+                    self.start_index = 0
+            else:
+                self.start_index = 0
+                print(f"\n[신규] 1번째 상품부터 수집 시작")
+
+            # DB 세션 시작
+            self.history_id = db.start_crawl_session(self.category_name, resume=self.resume)
+
+        finally:
+            db.close()
+
         async with async_playwright() as p:
             try:
                 print("[시작] Firefox 브라우저 실행 (전체화면)...")
                 browser = await p.firefox.launch(
                     headless=False,  # 항상 보이도록
-                    slow_mo=500
+                    slow_mo=1000  # 500ms → 1000ms (더 느리게)
                     # Firefox는 --start-maximized 지원 안함
                 )
 
@@ -149,32 +178,73 @@ class WomensClothingManualCaptcha:
                 else:
                     print(f"\n[탐색] 상품 {self.product_count}개 수집 시작...")
 
-                # 상품 링크 찾기 (이미지가 있는 링크만 = 상품 썸네일 링크)
-                print("[탐색] 상품 이미지 링크 찾는 중...")
-                product_elements = await page.query_selector_all('a[href*="/products/"]:has(img)')
+                # 상품 링크 수집 (스크롤 다운으로 동적 수집)
+                print("[탐색] 상품 URL 수집 시작 (스크롤 다운 활성화)")
+                all_product_urls = []
+                seen_urls = set()
+                last_url_count = 0
+                scroll_attempts = 0
+                max_scrolls = 10  # 최대 10번 스크롤
+                max_products = 500  # 최대 500개까지만 (안전장치)
 
-                if not product_elements:
-                    # Fallback: 기존 방식
-                    print("[Fallback] 기존 셀렉터로 재시도...")
-                    product_elements = await self.helper.try_selectors(
-                        page, SELECTORS['product_links'], "상품 링크", multiple=True
-                    )
+                import random
 
-                # 중복 제거 (URL 기준)
-                all_product_elements = []
-                if product_elements:
-                    seen_urls = set()
-                    for elem in product_elements:
-                        href = await elem.get_attribute('href')
-                        # 정확한 상품 URL 패턴 확인: /products/숫자
-                        if href and '/products/' in href and re.search(r'/products/\d+', href) and href not in seen_urls:
-                            all_product_elements.append(elem)
-                            seen_urls.add(href)
-                    print(f"[발견] 총 {len(all_product_elements)}개 상품 발견")
+                # 스크롤 다운하면서 URL 수집
+                while scroll_attempts < max_scrolls and len(all_product_urls) < max_products:
+                    # 현재 화면의 상품 링크 찾기
+                    product_elements = await page.query_selector_all('a[href*="/products/"]:has(img)')
+
+                    if not product_elements:
+                        # Fallback: 기존 방식
+                        product_elements = await self.helper.try_selectors(
+                            page, SELECTORS['product_links'], "상품 링크", multiple=True
+                        )
+
+                    # URL 수집 및 중복 제거
+                    if product_elements:
+                        for elem in product_elements:
+                            try:
+                                href = await elem.get_attribute('href')
+                                # 정확한 상품 URL 패턴 확인: /products/숫자
+                                # 브랜드 스토어 포함 (모든 상품 수집)
+                                if (href and '/products/' in href and
+                                    re.search(r'/products/\d+', href) and
+                                    href not in seen_urls):
+                                    all_product_urls.append(href)
+                                    seen_urls.add(href)
+                            except:
+                                continue
+
+                    # 새로운 URL이 없으면 종료
+                    if len(all_product_urls) == last_url_count:
+                        if scroll_attempts > 0:
+                            print(f"[완료] 더 이상 새로운 상품이 없습니다. (총 {len(all_product_urls)}개)")
+                        break
+
+                    # 진행 상황 출력 (10개 단위로)
+                    new_count = len(all_product_urls) - last_url_count
+                    if new_count > 0:
+                        print(f"[스크롤 {scroll_attempts + 1}] {new_count}개 추가 → 현재까지 {len(all_product_urls)}개")
+                    last_url_count = len(all_product_urls)
+
+                    # 최대 개수 도달 체크
+                    if len(all_product_urls) >= max_products:
+                        print(f"[제한] 최대 수집 개수({max_products}개)에 도달했습니다.")
+                        break
+
+                    # 스크롤 다운 (사람처럼 자연스럽게)
+                    await page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
+                    await asyncio.sleep(random.uniform(1.5, 2.5))  # 랜덤 대기
+                    scroll_attempts += 1
+
+                if not all_product_urls:
+                    print("[경고] 상품 URL을 찾을 수 없습니다.")
+                    all_product_urls = []
                 else:
-                    all_product_elements = []
+                    print(f"\n[완료] 총 {len(all_product_urls)}개 상품 URL 수집 완료!")
+                    print(f"       (스크롤: {scroll_attempts}회, 중복 제외됨)")
 
-                if not all_product_elements:
+                if not all_product_urls:
                     print("[경고] 상품을 찾을 수 없습니다.")
                     await page.screenshot(path='data/final_page.png')
                     print("[스크린샷] data/final_page.png 저장됨")
@@ -187,33 +257,33 @@ class WomensClothingManualCaptcha:
                         max_attempts = 10  # 최대 10개까지 시도
 
                         # 성공할 때까지 다음 상품 시도 (최대 max_attempts개)
-                        while found_count == 0 and idx < len(all_product_elements) and (idx - self.specific_index) < max_attempts:
+                        while found_count == 0 and idx < len(all_product_urls) and (idx - self.specific_index) < max_attempts:
                             print(f"\n[{idx+1}번째 상품] 수집 시도...")
 
-                            # specific_index 모드: 처음 찾은 element 그대로 사용
-                            product_elem = all_product_elements[idx]
-                            href = await product_elem.get_attribute('href')
-
-                            if not href:
-                                print(f"#{idx+1} [SKIP] URL을 가져올 수 없음 - 다음 상품 시도")
-                                idx += 1
-                                continue
+                            # 미리 추출한 URL 사용
+                            href = all_product_urls[idx]
 
                             try:
-                                    # 상품 클릭 (viewport로 스크롤 후 클릭)
-                                    try:
-                                        # 1. Element를 화면에 보이도록 스크롤
-                                        await product_elem.scroll_into_view_if_needed()
-                                        await asyncio.sleep(0.5)
+                                    import random
 
-                                        # 2. 클릭 시도 (타임아웃 10초)
-                                        await product_elem.click(timeout=10000)
-                                    except Exception as click_error:
-                                        # 3. 실패 시 강제 클릭 시도
-                                        print(f"   [재시도] 강제 클릭 시도...")
-                                        await product_elem.click(force=True, timeout=5000)
+                                    # 가끔 메인 페이지 작은 스크롤 (10% 확률)
+                                    if random.random() < 0.1:
+                                        await page.evaluate(f'window.scrollBy(0, {random.randint(-50, 50)})')
+                                        await asyncio.sleep(random.uniform(0.2, 0.5))
 
-                                    await asyncio.sleep(3)
+                                    # 봇 차단 방지: 랜덤 대기 (5-12초, 사람처럼)
+                                    delay = random.uniform(5.0, 12.0)
+                                    await asyncio.sleep(delay)
+
+                                    # 가끔 페이지 스크롤 (10% 확률로 사람처럼 행동)
+                                    if random.random() < 0.1:
+                                        scroll_amount = random.randint(100, 300)
+                                        await page.evaluate(f'window.scrollBy(0, {scroll_amount})')
+                                        await asyncio.sleep(random.uniform(0.5, 1.5))
+
+                                    # JavaScript로 새 탭에서 상품 페이지 열기
+                                    await page.evaluate(f'window.open("{href}", "_blank")')
+                                    await asyncio.sleep(2)
 
                                     # 새 탭 찾기
                                     all_pages = context.pages
@@ -224,12 +294,24 @@ class WomensClothingManualCaptcha:
 
                                     detail_page = all_pages[-1]
                                     await detail_page.wait_for_load_state('domcontentloaded')
-                                    await asyncio.sleep(1)
 
-                                    # URL 검증: 상품 페이지인지 확인
+                                    # 에러 페이지 최우선 감지 (대기 전에!)
+                                    try:
+                                        error_check = await detail_page.query_selector('text="현재 서비스 접속이 불가합니다"')
+                                        if error_check:
+                                            print(f"#{idx+1} [SKIP] 서비스 접속 불가 - 빠르게 건너뜀")
+                                            await detail_page.close()
+                                            idx += 1
+                                            continue
+                                    except:
+                                        pass
+
+                                    await asyncio.sleep(0.5)  # 1초 → 0.5초 단축
+
+                                    # URL 검증: 상품 페이지인지 확인 (브랜드 스토어 포함)
                                     current_url = detail_page.url
                                     if not re.search(r'/products/\d+', current_url):
-                                        print(f"#{idx+1} [SKIP] 잘못된 페이지 (스토어 페이지?) - 다음 상품 시도")
+                                        print(f"#{idx+1} [SKIP] 잘못된 페이지 - 다음 상품 시도")
                                         print(f"         URL: {current_url[:70]}")
                                         await detail_page.close()
                                         idx += 1
@@ -237,14 +319,22 @@ class WomensClothingManualCaptcha:
 
                                     # 정상 상품 페이지 - 수집 진행
                                     try:
-                                        await detail_page.wait_for_load_state('networkidle', timeout=10000)
+                                        # 타임아웃을 3초로 더 단축 (5초 → 3초)
+                                        await detail_page.wait_for_load_state('networkidle', timeout=3000)
                                     except:
                                         pass
-                                    await asyncio.sleep(1)
+                                    await asyncio.sleep(0.5)  # 1초 → 0.5초 단축
 
-                                    # 스크롤 (검색태그 위치)
-                                    await detail_page.evaluate('window.scrollTo(0, document.body.scrollHeight * 0.4)')
-                                    await asyncio.sleep(2)
+                                    # 스크롤 (검색태그 위치) - 랜덤 40-50%
+                                    scroll_percent = random.uniform(0.40, 0.50)
+                                    await detail_page.evaluate(f'window.scrollTo(0, document.body.scrollHeight * {scroll_percent})')
+                                    await asyncio.sleep(random.uniform(0.8, 1.5))  # 랜덤 대기
+
+                                    # 가끔 추가 스크롤 (20% 확률)
+                                    if random.random() < 0.2:
+                                        scroll_percent2 = random.uniform(0.35, 0.55)
+                                        await detail_page.evaluate(f'window.scrollTo(0, document.body.scrollHeight * {scroll_percent2})')
+                                        await asyncio.sleep(random.uniform(0.3, 0.8))
 
                                     # 상품 정보 수집
                                     self.product_data = {}
@@ -279,9 +369,15 @@ class WomensClothingManualCaptcha:
 
                                     print(f"#{idx+1} [{product_name[:30]}] - 태그 {tags_count}개 ✅ 수집 성공!")
 
-                                    # 탭 닫기
+                                    # 탭 닫기 (랜덤 대기)
                                     await detail_page.close()
-                                    await asyncio.sleep(1)
+                                    await asyncio.sleep(random.uniform(0.5, 2.0))
+
+                                    # 가끔 메인 페이지 스크롤 (15% 확률)
+                                    if random.random() < 0.15:
+                                        scroll_y = random.randint(-200, 300)
+                                        await page.evaluate(f'window.scrollBy(0, {scroll_y})')
+                                        await asyncio.sleep(random.uniform(0.3, 0.7))
 
                             except Exception as e:
                                 print(f"#{idx+1} [ERROR] {str(e)[:50]} - 다음 상품 시도")
@@ -301,18 +397,22 @@ class WomensClothingManualCaptcha:
                         print(f"{'='*60}")
                     else:
                         # 모든 상품 수집 (광고 포함, 검색태그 없어도 수집)
-                        print(f"[시작] 1번째 상품부터 모든 상품 수집...\n")
+                        print(f"[시작] {self.start_index + 1}번째 상품부터 모든 상품 수집...\n")
                         print(f"[정보] 광고 포함, 검색태그 없어도 수집\n")
 
                         # 주기적 저장 설정
                         if self.product_count is None:  # 무한 모드일 때만
                             print(f"[정보] 100개마다 자동 DB 저장 활성화\n")
 
+                        # 재개 모드일 때 이미 수집한 개수 체산
+                        if self.resume and self.start_index > 0:
+                            print(f"[재개] {self.start_index}개는 이미 수집 완료 - 건너뜀\n")
+
                         found_count = 0
-                        idx = 0  # 1번째 상품부터 시작
+                        idx = self.start_index  # 시작 인덱스 (재개 시 변경됨)
 
                         # 무한 모드(product_count=None)이면 계속 수집, 아니면 개수 제한
-                        while (self.product_count is None or found_count < self.product_count) and idx < len(all_product_elements):
+                        while (self.product_count is None or found_count < self.product_count) and idx < len(all_product_urls):
                             # 중지 요청 확인
                             if self.should_stop:
                                 print(f"[중지] 사용자 요청으로 수집 중지 ({found_count}개 수집 완료)")
@@ -332,68 +432,84 @@ class WomensClothingManualCaptcha:
                                     print(f"[자동 저장 오류] {str(e)[:100]}")
                                 print(f"{'='*60}\n")
 
-                            # 간결한 로그 (10개마다만 상세 표시)
-                            if idx % 10 == 0:
-                                print(f"\n[{idx+1}번째 상품] 수집 중...")
-                            else:
-                                # 한 줄로 간결하게 (진행 중 표시)
-                                print(f"[{idx+1}] ", end="", flush=True)
+                            # 모든 상품에 대해 "[N번째 상품] 수집 중..." 표시
+                            print(f"\n[{idx+1}번째 상품] 수집 중...", end="", flush=True)
 
                             try:
-                                # 처음 찾은 element 사용 (재탐색 하지 않음)
-                                product_elem = all_product_elements[idx]
-                                href = await product_elem.get_attribute('href')
+                                # 미리 추출한 URL 사용
+                                href = all_product_urls[idx]
 
-                                if not href:
-                                    if idx % 10 == 0:
-                                        print(f"#{idx+1} [SKIP] URL을 가져올 수 없음")
-                                    else:
-                                        print("⚠ ", end="", flush=True)
-                                    idx += 1
-                                    continue
-                                # 상품 클릭 (viewport로 스크롤 후 클릭)
-                                try:
-                                    # 1. Element를 화면에 보이도록 스크롤
-                                    await product_elem.scroll_into_view_if_needed()
-                                    await asyncio.sleep(0.5)
+                                # 상품 페이지 열기 (JavaScript로 자연스럽게)
+                                import random
 
-                                    # 2. 클릭 시도 (타임아웃 10초)
-                                    await product_elem.click(timeout=10000)
-                                except Exception as click_error:
-                                    # 3. 실패 시 강제 클릭 시도
-                                    print(f"   [재시도] 강제 클릭 시도...")
-                                    await product_elem.click(force=True, timeout=5000)
+                                # 가끔 메인 페이지 작은 스크롤 (10% 확률)
+                                if random.random() < 0.1:
+                                    await page.evaluate(f'window.scrollBy(0, {random.randint(-50, 50)})')
+                                    await asyncio.sleep(random.uniform(0.2, 0.5))
 
-                                await asyncio.sleep(3)
+                                # 봇 차단 방지: 랜덤 대기 (5-12초, 사람처럼)
+                                delay = random.uniform(5.0, 12.0)
+                                await asyncio.sleep(delay)
+
+                                # 가끔 페이지 스크롤 (10% 확률로 사람처럼 행동)
+                                if random.random() < 0.1:
+                                    scroll_amount = random.randint(100, 300)
+                                    await page.evaluate(f'window.scrollBy(0, {scroll_amount})')
+                                    await asyncio.sleep(random.uniform(0.5, 1.5))
+
+                                # JavaScript로 새 탭에서 상품 페이지 열기 (더 자연스러움)
+                                await page.evaluate(f'window.open("{href}", "_blank")')
+                                await asyncio.sleep(2)
 
                                 # 새 탭 찾기
                                 all_pages = context.pages
                                 if len(all_pages) <= 1:
-                                    print(f"#{idx+1} [SKIP] 탭 열림 실패")
+                                    print(f" [SKIP] 탭 열림 실패")
                                     idx += 1
                                     continue
 
                                 detail_page = all_pages[-1]
                                 await detail_page.wait_for_load_state('domcontentloaded')
-                                await asyncio.sleep(1)
 
-                                # URL 검증: 상품 페이지인지 확인
+                                # 에러 페이지 최우선 감지 (대기 전에!)
+                                try:
+                                    error_check = await detail_page.query_selector('text="현재 서비스 접속이 불가합니다"')
+                                    if error_check:
+                                        print(f" [SKIP] 서비스 접속 불가")
+                                        await detail_page.close()
+                                        idx += 1
+                                        continue
+                                except:
+                                    pass
+
+                                await asyncio.sleep(0.5)  # 1초 → 0.5초 단축
+
+                                # URL 검증: 상품 페이지인지 확인 (브랜드 스토어 포함)
                                 current_url = detail_page.url
                                 if not re.search(r'/products/\d+', current_url):
-                                    print(f"#{idx+1} [SKIP] 잘못된 페이지 (스토어 페이지?): {current_url[:50]}")
+                                    print(f" [SKIP] 잘못된 페이지")
                                     await detail_page.close()
                                     idx += 1
                                     continue
 
                                 try:
-                                    await detail_page.wait_for_load_state('networkidle', timeout=10000)
+                                    # 타임아웃을 3초로 더 단축 (5초 → 3초)
+                                    await detail_page.wait_for_load_state('networkidle', timeout=3000)
                                 except:
                                     pass
-                                await asyncio.sleep(1)
+                                await asyncio.sleep(0.5)  # 1초 → 0.5초 단축
 
-                                # 스크롤 (검색태그 위치)
-                                await detail_page.evaluate('window.scrollTo(0, document.body.scrollHeight * 0.4)')
-                                await asyncio.sleep(2)
+                                # 스크롤 (검색태그 위치) - 랜덤 40-50%
+                                import random
+                                scroll_percent = random.uniform(0.40, 0.50)
+                                await detail_page.evaluate(f'window.scrollTo(0, document.body.scrollHeight * {scroll_percent})')
+                                await asyncio.sleep(random.uniform(0.8, 1.5))  # 랜덤 대기
+
+                                # 가끔 추가 스크롤 (20% 확률)
+                                if random.random() < 0.2:
+                                    scroll_percent2 = random.uniform(0.35, 0.55)
+                                    await detail_page.evaluate(f'window.scrollTo(0, document.body.scrollHeight * {scroll_percent2})')
+                                    await asyncio.sleep(random.uniform(0.3, 0.8))
 
                                 # 상품 정보 수집
                                 self.product_data = {}
@@ -414,11 +530,7 @@ class WomensClothingManualCaptcha:
                                 )
 
                                 if is_invalid:
-                                    if idx % 10 == 0:
-                                        print(f"#{idx+1} [SKIP] 잘못된 상품명: '{(product_name or 'None')[:30]}'")
-                                        print(f"         현재 URL: {detail_page.url[:70]}")
-                                    else:
-                                        print("✗ ", end="", flush=True)
+                                    print(f" [SKIP] 잘못된 상품명: '{(product_name or 'None')[:30]}'")
                                     await detail_page.close()
                                     idx += 1
                                     continue
@@ -428,25 +540,32 @@ class WomensClothingManualCaptcha:
                                 self.products_data.append(self.product_data.copy())
                                 found_count += 1
 
-                                # 간결한 성공 로그
-                                if idx % 10 == 0:  # 10개마다 상세 로그
-                                    if self.product_count is None:
-                                        print(f"#{idx+1} [{product_name[:30]}] - 태그 {tags_count}개 (총 {found_count}개)")
-                                    else:
-                                        print(f"#{idx+1} [{product_name[:30]}] - 태그 {tags_count}개 ({found_count}/{self.product_count})")
+                                # 수집 성공 로그 (같은 줄에 표시)
+                                if self.product_count is None:
+                                    print(f" [{product_name[:40]}] - 태그 {tags_count}개 (총 {found_count}개)")
                                 else:
-                                    # 한 글자로 성공 표시
-                                    print("✓ ", end="", flush=True)
+                                    print(f" [{product_name[:40]}] - 태그 {tags_count}개 ({found_count}/{self.product_count})")
 
-                                # 탭 닫기
+                                # DB 진행 상황 업데이트 (10개마다) - 커넥션 재사용
+                                if self.history_id and found_count % 10 == 0:
+                                    if not self.db_connector:
+                                        from src.database.db_connector import DatabaseConnector
+                                        self.db_connector = DatabaseConnector()
+                                        self.db_connector.connect()
+                                    self.db_connector.update_crawl_progress(self.history_id, idx, self.start_index + found_count)
+
+                                # 탭 닫기 (랜덤 대기)
                                 await detail_page.close()
-                                await asyncio.sleep(1)
+                                await asyncio.sleep(random.uniform(0.5, 2.0))
+
+                                # 가끔 메인 페이지 스크롤 (15% 확률)
+                                if random.random() < 0.15:
+                                    scroll_y = random.randint(-200, 300)
+                                    await page.evaluate(f'window.scrollBy(0, {scroll_y})')
+                                    await asyncio.sleep(random.uniform(0.3, 0.7))
 
                             except Exception as e:
-                                if idx % 10 == 0:
-                                    print(f"#{idx+1} [ERROR] {str(e)[:50]}")
-                                else:
-                                    print("❌ ", end="", flush=True)
+                                print(f" [ERROR] {str(e)[:50]}")
                                 try:
                                     if len(context.pages) > 2:
                                         await context.pages[-1].close()
@@ -460,18 +579,43 @@ class WomensClothingManualCaptcha:
                     print(f"[총 확인] {idx}개 상품 확인")
                     print(f"{'='*60}")
 
-                # 브라우저 30초 더 열어둠 (확인용)
+                # 브라우저 3초 더 열어둠 (확인용)
                 print("\n[완료] 데이터 수집 완료!")
-                print("⏰ 브라우저를 30초 후 자동으로 닫습니다...")
-                await asyncio.sleep(30)
+                print("⏰ 브라우저를 3초 후 자동으로 닫습니다...")
+                await asyncio.sleep(3)
 
                 await browser.close()
+
+                # DB 세션 종료 (커넥션 재사용)
+                if self.history_id:
+                    if not self.db_connector:
+                        from src.database.db_connector import DatabaseConnector
+                        self.db_connector = DatabaseConnector()
+                        self.db_connector.connect()
+                    if self.should_stop:
+                        self.db_connector.end_crawl_session(self.history_id, status='paused')  # 중지된 경우
+                    else:
+                        self.db_connector.end_crawl_session(self.history_id, status='completed')  # 정상 완료
+                    self.db_connector.close()
+                    self.db_connector = None
+
                 return self.products_data
 
             except Exception as e:
                 print(f"[오류] {str(e)}")
                 import traceback
                 traceback.print_exc()
+
+                # DB 세션 종료 (에러) - 커넥션 재사용
+                if self.history_id:
+                    if not self.db_connector:
+                        from src.database.db_connector import DatabaseConnector
+                        self.db_connector = DatabaseConnector()
+                        self.db_connector.connect()
+                    self.db_connector.end_crawl_session(self.history_id, status='failed', error_message=str(e))
+                    self.db_connector.close()
+                    self.db_connector = None
+
                 return None
 
     async def _collect_product_info(self, page, product_elem):
@@ -618,6 +762,31 @@ class WomensClothingManualCaptcha:
         리팩토링: config 기반 다중 fallback 시스템 사용
         """
         detail_info = {}
+
+        # 에러 페이지 감지 (빠른 실패)
+        try:
+            # "현재 서비스 접속이 불가합니다" 에러 페이지 체크
+            error_elem = await page.query_selector('text="현재 서비스 접속이 불가합니다"')
+            if error_elem:
+                print("   [에러 페이지] 서비스 접속 불가 페이지 감지")
+                detail_info['detail_product_name'] = None  # 상품명 None 처리
+                return detail_info
+
+            # "접속이 원활하지 않습니다" 에러 페이지 체크
+            error_elem2 = await page.query_selector('text="접속이 원활하지 않습니다"')
+            if error_elem2:
+                print("   [에러 페이지] 접속 불가 페이지 감지")
+                detail_info['detail_product_name'] = None
+                return detail_info
+
+            # "페이지를 찾을 수 없습니다" 에러 페이지 체크
+            error_elem3 = await page.query_selector('text="페이지를 찾을 수 없습니다"')
+            if error_elem3:
+                print("   [에러 페이지] 404 페이지 감지")
+                detail_info['detail_product_name'] = None
+                return detail_info
+        except:
+            pass
 
         # 1. 상품명 (product_name) - TEXT NOT NULL
         elem = await self.helper.try_selectors(page, SELECTORS['product_name'], "상품명")

@@ -85,9 +85,7 @@ Crawl/
 ### PostgreSQL 정보
 - **DB 이름**: `naver` (고정)
 - **기본 포트**: 5432
-- **테이블**:
-  - `categories`: 카테고리 정보
-  - `products`: 상품 정보 및 검색 태그
+- **테이블**: `categories`, `products`, `crawl_history`
 
 ### 환경 변수 (.env)
 ```env
@@ -97,6 +95,70 @@ DB_NAME=naver
 DB_USER=postgres
 DB_PASSWORD=postgres
 ```
+
+### 데이터베이스 스키마
+
+#### 1. Categories 테이블
+카테고리 메타데이터 저장
+```sql
+CREATE TABLE categories (
+    category_name VARCHAR(100) PRIMARY KEY,    -- 카테고리 이름 (예: "여성의류")
+    category_id VARCHAR(20),                   -- 네이버 카테고리 ID (예: "10000107")
+    is_active BOOLEAN DEFAULT FALSE,           -- 활성화 상태
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+#### 2. Products 테이블
+상품 상세 정보 및 검색 태그 저장
+```sql
+CREATE TABLE products (
+    product_id VARCHAR(255) PRIMARY KEY,       -- 상품 고유 ID
+    category_name VARCHAR(100),                -- 카테고리명 (categories 참조, FK 없음)
+    product_name TEXT NOT NULL,                -- 상품명
+    brand_name VARCHAR(100),                   -- 브랜드명
+    price INTEGER,                             -- 가격 (원)
+    discount_rate INTEGER,                     -- 할인율 (%)
+    review_count INTEGER DEFAULT 0,            -- 리뷰 수
+    rating NUMERIC(2,1),                       -- 평점 (0.0~5.0)
+    search_tags TEXT[],                        -- 검색 태그 배열
+    product_url TEXT,                          -- 상품 URL
+    thumbnail_url TEXT,                        -- 썸네일 이미지 URL
+    is_sold_out BOOLEAN DEFAULT FALSE,         -- 품절 여부
+    crawled_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    category_fullname VARCHAR(500)             -- 카테고리 전체 경로 (예: "하의 > 바지 & 슬렉스")
+);
+
+-- 인덱스
+CREATE INDEX idx_product_name ON products(product_name);
+CREATE INDEX idx_product_price ON products(price);
+CREATE INDEX idx_crawled_at ON products(crawled_at);
+CREATE INDEX idx_category_fullname ON products(category_fullname);
+```
+
+#### 3. Crawl_History 테이블
+크롤링 작업 이력 추적
+```sql
+CREATE TABLE crawl_history (
+    history_id SERIAL PRIMARY KEY,             -- 자동 증가 ID
+    crawl_type VARCHAR(50) NOT NULL,           -- 크롤링 유형 (카테고리/상품)
+    start_time TIMESTAMP NOT NULL,             -- 시작 시각
+    end_time TIMESTAMP,                        -- 종료 시각
+    total_categories INTEGER DEFAULT 0,        -- 수집한 카테고리 수
+    total_products INTEGER DEFAULT 0,          -- 수집한 상품 수
+    status VARCHAR(20) DEFAULT 'running',      -- 상태 (running/completed/failed)
+    error_message TEXT,                        -- 에러 메시지
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+### 설계 특징
+- **❌ Foreign Key 없음**: `category_name`으로 직접 조인 (유연성 우선)
+- **✅ PostgreSQL 배열**: `search_tags TEXT[]` 네이티브 배열 타입 사용
+- **✅ 인덱스 최적화**: 자주 검색하는 필드에 인덱스 설정
+- **✅ NUMERIC 정밀도**: `rating NUMERIC(2,1)` → 0.0~9.9 범위 (실제 0.0~5.0)
+- **✅ 카테고리 경로**: `category_fullname` 필드로 전체 경로 저장
 
 ## 🤖 크롤링 전략 (네이버 전용)
 
@@ -125,6 +187,25 @@ DB_PASSWORD=postgres
 2. ❌ 프로젝트 구조 임의 변경
 3. ❌ 루트 디렉토리에 임시 파일 생성
 4. ❌ 네이버 카테고리 URL 직접 접근
+
+## 🎨 GUI 설계 원칙
+
+### 팝업 사용 금지
+- **원칙**: 모든 정보는 메인 창 내에서 표시 (팝업 절대 금지)
+- **이유**: 팝업 클릭이 번거롭고, 사용자 워크플로우 방해
+- **대안**: 로그 영역에 정보 출력 또는 메인 창 영역 활용
+
+### 확인창 금지
+- **무한 모드 시작**: 확인창 없이 바로 시작
+- **설정 변경**: 즉시 반영 (확인 불필요)
+- **최근 기록**: 로그 영역에 출력
+
+### 정보 표시 원칙
+- ✅ 메인 창 내 라벨/텍스트로 표시
+- ✅ 로그 영역에 상세 정보 출력
+- ✅ 상태 바에 간단한 알림
+- ❌ 별도 팝업 창 생성 금지
+- ❌ 확인/취소 다이얼로그 금지
 
 ## 📊 성능 기준
 

@@ -77,7 +77,7 @@ CREATE TABLE categories (
 -- 데이터 예시 (총 40개 대분류 카테고리)
 INSERT INTO categories (category_name, category_id, is_active) VALUES
 ('여성의류', '10000107', TRUE),   -- 현재 유일하게 활성화
-('남성의류', '10000108', FALSE),
+('남성의류', '10000108', TRUE),   -- 추가됨
 ('패션잡화', '10000109', FALSE),
 -- ... 37개 더
 ```
@@ -90,32 +90,54 @@ INSERT INTO categories (category_name, category_id, is_active) VALUES
 ##### Products 테이블 (상품 정보) - 핵심 테이블
 ```sql
 CREATE TABLE products (
-    product_id VARCHAR(50) PRIMARY KEY,               -- 상품 URL에서 추출한 ID
+    product_id VARCHAR(255) PRIMARY KEY,              -- 상품 URL에서 추출한 ID (최대 255자)
     category_name VARCHAR(100),                       -- 카테고리명 (FK 없음)
-    product_name TEXT,                                -- 상품명
-    brand_name VARCHAR(200),                          -- 브랜드명
+    product_name TEXT NOT NULL,                       -- 상품명 (필수)
+    brand_name VARCHAR(100),                          -- 브랜드명
     price INTEGER,                                    -- 가격 (원)
     discount_rate INTEGER,                            -- 할인율 (%)
     review_count INTEGER DEFAULT 0,                   -- 리뷰 수
-    rating NUMERIC(3,2),                              -- 평점 (0.00 ~ 5.00)
+    rating NUMERIC(2,1),                              -- 평점 (0.0 ~ 5.0)
     search_tags TEXT[],                               -- 검색 태그 배열 ⭐ 핵심 필드
     product_url TEXT,                                 -- 상품 상세 페이지 URL
     thumbnail_url TEXT,                               -- 썸네일 이미지 URL
     is_sold_out BOOLEAN DEFAULT FALSE,                -- 품절 여부
-    crawled_at TIMESTAMP,                             -- 크롤링 시간
-    updated_at TIMESTAMP,                             -- 업데이트 시간
+    crawled_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,   -- 크롤링 시간
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,   -- 업데이트 시간
+    category_fullname VARCHAR(500)                    -- 카테고리 전체 경로 (예: "남성>상의>티셔츠")
 );
 
 -- 인덱스
 CREATE INDEX idx_product_name ON products(product_name);
+CREATE INDEX idx_product_price ON products(price);
 CREATE INDEX idx_crawled_at ON products(crawled_at);
-CREATE INDEX idx_search_tags ON products USING GIN(search_tags);  -- 배열 검색 최적화
+CREATE INDEX idx_category_fullname ON products(category_fullname);
 ```
 
 **중복 체크 로직**:
 - `product_id` 기준으로 UPSERT (ON CONFLICT UPDATE)
 - 모든 필드 비교하여 변경 사항 있을 때만 업데이트
 - `is_duplicate_product()` 함수로 사전 필터링
+
+##### Crawl_History 테이블 (크롤링 이력)
+```sql
+CREATE TABLE crawl_history (
+    history_id SERIAL PRIMARY KEY,                    -- 이력 ID (자동 증가)
+    crawl_type VARCHAR(50) NOT NULL,                  -- 크롤링 유형 (예: "여성의류", "남성의류")
+    start_time TIMESTAMP NOT NULL,                    -- 시작 시간
+    end_time TIMESTAMP,                               -- 종료 시간
+    total_categories INTEGER DEFAULT 0,               -- 크롤링한 카테고리 수
+    total_products INTEGER DEFAULT 0,                 -- 수집한 상품 수
+    status VARCHAR(20) DEFAULT 'running',             -- 상태 (running, completed, failed)
+    error_message TEXT,                               -- 오류 메시지 (있을 경우)
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP    -- 생성 시간
+);
+```
+
+**설계 목적**:
+- 크롤링 세션 추적 및 모니터링
+- 성능 분석 및 오류 디버깅
+- 향후 스케줄링 및 자동화 지원
 
 #### 4.3 환경 변수 설정 (.env)
 ```bash

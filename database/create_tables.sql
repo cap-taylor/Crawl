@@ -89,11 +89,13 @@ COMMENT ON COLUMN products.updated_at IS '업데이트 시간';
 CREATE TABLE IF NOT EXISTS crawl_history (
     history_id SERIAL PRIMARY KEY,                    -- 이력 ID
     crawl_type VARCHAR(50) NOT NULL,                  -- 크롤링 타입 (category, product)
+    category_name VARCHAR(100),                       -- 수집 중인 카테고리명
     start_time TIMESTAMP NOT NULL,                    -- 시작 시간
     end_time TIMESTAMP,                               -- 종료 시간
     total_categories INTEGER DEFAULT 0,               -- 수집된 카테고리 수
     total_products INTEGER DEFAULT 0,                 -- 수집된 상품 수
-    status VARCHAR(20) DEFAULT 'running',             -- 상태 (running, completed, failed)
+    last_product_index INTEGER DEFAULT 0,             -- 마지막 수집 상품 인덱스 (0-based)
+    status VARCHAR(20) DEFAULT 'running',             -- 상태 (running, completed, failed, paused)
     error_message TEXT,                               -- 오류 메시지
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP    -- 생성 시간
 );
@@ -102,11 +104,13 @@ CREATE TABLE IF NOT EXISTS crawl_history (
 COMMENT ON TABLE crawl_history IS '크롤링 실행 이력';
 COMMENT ON COLUMN crawl_history.history_id IS '이력 ID';
 COMMENT ON COLUMN crawl_history.crawl_type IS '크롤링 타입 (category, product)';
+COMMENT ON COLUMN crawl_history.category_name IS '수집 중인 카테고리명';
 COMMENT ON COLUMN crawl_history.start_time IS '시작 시간';
 COMMENT ON COLUMN crawl_history.end_time IS '종료 시간';
 COMMENT ON COLUMN crawl_history.total_categories IS '수집된 카테고리 수';
 COMMENT ON COLUMN crawl_history.total_products IS '수집된 상품 수';
-COMMENT ON COLUMN crawl_history.status IS '상태 (running, completed, failed)';
+COMMENT ON COLUMN crawl_history.last_product_index IS '마지막 수집 상품 인덱스 (0-based)';
+COMMENT ON COLUMN crawl_history.status IS '상태 (running, completed, failed, paused)';
 COMMENT ON COLUMN crawl_history.error_message IS '오류 메시지';
 COMMENT ON COLUMN crawl_history.created_at IS '생성 시간';
 
