@@ -140,11 +140,18 @@ class WomensClothingManualCaptcha:
                 print("[클릭] 카테고리 메뉴 열기...")
                 category_btn = await page.wait_for_selector('button:has-text("카테고리")')
                 await category_btn.click()
-                await asyncio.sleep(2)
+
+                # 카테고리 메뉴가 열릴 때까지 대기 (명시적 확인)
+                try:
+                    await page.wait_for_selector('a[data-name="여성의류"]', timeout=5000, state='visible')
+                    print("[확인] 카테고리 메뉴 열림 완료")
+                except:
+                    print("[경고] 카테고리 메뉴 열림 타임아웃 - 3초 추가 대기")
+                    await asyncio.sleep(3)
 
                 # 4. 여성의류 클릭
                 print(f"[클릭] {self.category_name} 카테고리...")
-                womens = await page.wait_for_selector(f'a[data-name="{self.category_name}"]')
+                womens = await page.wait_for_selector(f'a[data-name="{self.category_name}"]', timeout=10000)
                 await womens.click()
 
                 # 페이지 로드 대기 (충분한 시간)

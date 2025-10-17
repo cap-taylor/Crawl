@@ -13,7 +13,7 @@ import customtkinter as ctk
 
 # 프로젝트 경로 추가
 sys.path.append('/home/dino/MyProjects/Crawl')
-from src.core.product_crawler import WomensClothingManualCaptcha
+from src.core.product_crawler_v2 import ProgressiveCrawler
 
 
 def remove_emojis(text):
@@ -84,6 +84,9 @@ class ProductCollectorGUI:
         self.window.title("네이버 쇼핑 상품 수집기")
         self.window.geometry("950x850")  # 약간 크게 (로그 영역 확대)
 
+        # 창 최소 크기 설정 (UI 깨짐 방지)
+        self.window.minsize(800, 700)
+
         # 테마 설정
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
@@ -111,8 +114,8 @@ class ProductCollectorGUI:
         # 로그 레벨 (간결/상세)
         self.log_level = "normal"  # "normal" or "verbose"
 
-        # 설정 접기 상태
-        self.settings_collapsed = False
+        # 설정 접기 상태 (기본: 접힌 상태)
+        self.settings_collapsed = True
 
         # GUI 구성
         self._create_widgets()
@@ -122,6 +125,10 @@ class ProductCollectorGUI:
 
         # 통계 업데이트 타이머 (1초마다)
         self.window.after(1000, self._update_stats_display)
+
+        # 키보드 단축키 바인딩
+        self.window.bind('<Return>', self._on_enter_key)
+        self.window.bind('<Escape>', self._on_escape_key)
 
     def _load_categories(self):
         """카테고리 JSON 파일에서 카테고리 목록 로드"""
@@ -200,9 +207,9 @@ class ProductCollectorGUI:
             text_color="gray60"
         ).pack(side="left", padx=10)
 
-        # 설정 프레임 (접을 수 있음)
+        # 설정 프레임 (접을 수 있음, 기본: 접힌 상태)
         self.settings_frame = ctk.CTkFrame(settings_container)
-        self.settings_frame.pack(fill="x", padx=10, pady=(5, 10))
+        # 초기에는 pack하지 않음 (접힌 상태)
 
         # 카테고리 선택 프레임
         category_frame = ctk.CTkFrame(self.settings_frame)
@@ -224,16 +231,7 @@ class ProductCollectorGUI:
             font=("Arial", 12),
             width=300
         )
-        self.category_dropdown.pack(side="left", padx=(0, 10))
-
-        # 선택된 카테고리 정보 표시
-        self.category_info_label = ctk.CTkLabel(
-            category_dropdown_frame,
-            text=f"ID: {self.categories.get('여성의류', 'N/A')}",
-            font=("Arial", 11),
-            text_color="gray"
-        )
-        self.category_info_label.pack(side="left")
+        self.category_dropdown.pack(side="left")
 
         # 카테고리 변경 이벤트 핸들러
         self.selected_category.trace_add('write', self._on_category_change)
@@ -244,7 +242,7 @@ class ProductCollectorGUI:
 
         ctk.CTkLabel(mode_frame, text="수집 모드:", font=("Arial", 14, "bold")).pack(anchor="w", padx=(0, 10))
 
-        self.collection_mode = ctk.StringVar(value="test")  # "test" or "infinite"
+        self.collection_mode = ctk.StringVar(value="infinite")  # "test" or "infinite" - 기본: 무한 모드
 
         # 테스트 모드 라디오 버튼
         test_radio_frame = ctk.CTkFrame(mode_frame)
@@ -260,7 +258,7 @@ class ProductCollectorGUI:
         )
         self.test_radio.pack(side="left")
 
-        self.product_count_entry = ctk.CTkEntry(test_radio_frame, width=80, placeholder_text="20")
+        self.product_count_entry = ctk.CTkEntry(test_radio_frame, width=80, placeholder_text="예: 20", state="disabled")
         self.product_count_entry.pack(side="left", padx=(10, 0))
         self.product_count_entry.insert(0, "20")
 
@@ -378,7 +376,7 @@ class ProductCollectorGUI:
 
         self.status_label = ctk.CTkLabel(
             left_status_frame,
-            text="대기 중",
+            text="● 대기 중",  # ● 기호 추가
             font=("Arial", 16, "bold")
         )
         self.status_label.pack(pady=(0, 8))
@@ -389,25 +387,45 @@ class ProductCollectorGUI:
             text="수집: 0개",
             font=("Arial", 13)
         )
-        self.progress_label.pack()
+        self.progress_label.pack(pady=(0, 8))
 
-        # 오른쪽: 통계 패널 - 카드 스타일
+        # 프로그레스 바
+        self.progress_bar = ctk.CTkProgressBar(
+            left_status_frame,
+            width=200,
+            height=10
+        )
+        self.progress_bar.pack()
+        self.progress_bar.set(0)  # 초기값 0%
+
+        # 오른쪽: 통계 패널 - 카드 스타일 (2x2 그리드)
         stats_frame = ctk.CTkFrame(status_frame, fg_color="gray20", corner_radius=8)
         stats_frame.pack(side="right", fill="both", expand=True, padx=15, pady=15)
 
         ctk.CTkLabel(stats_frame, text="실시간 통계", font=("Arial", 13, "bold")).pack(pady=(8, 8))
 
-        # 통계 라벨들 - 숫자 강조
-        self.stats_collected_label = ctk.CTkLabel(stats_frame, text="수집: 0개", font=("Arial", 12))
-        self.stats_collected_label.pack(pady=2)
+        # 2x2 그리드 컨테이너
+        stats_grid = ctk.CTkFrame(stats_frame, fg_color="transparent")
+        stats_grid.pack(padx=10, pady=(0, 8))
 
-        self.stats_skipped_label = ctk.CTkLabel(stats_frame, text="중복: 0개", font=("Arial", 12))
-        self.stats_skipped_label.pack(pady=2)
+        # 첫 번째 행
+        row1 = ctk.CTkFrame(stats_grid, fg_color="transparent")
+        row1.pack(fill="x", pady=2)
 
-        self.stats_speed_label = ctk.CTkLabel(stats_frame, text="속도: 0.0개/분", font=("Arial", 12))
-        self.stats_speed_label.pack(pady=2)
+        self.stats_collected_label = ctk.CTkLabel(row1, text="수집: 0개", font=("Arial", 12), width=110)
+        self.stats_collected_label.pack(side="left", padx=5)
 
-        # 상품 미리보기 (최근 수집 상품)
+        self.stats_skipped_label = ctk.CTkLabel(row1, text="중복: 0개", font=("Arial", 12), width=110)
+        self.stats_skipped_label.pack(side="left", padx=5)
+
+        # 두 번째 행
+        row2 = ctk.CTkFrame(stats_grid, fg_color="transparent")
+        row2.pack(fill="x", pady=2)
+
+        self.stats_speed_label = ctk.CTkLabel(row2, text="속도: 0.0개/분", font=("Arial", 12), width=110)
+        self.stats_speed_label.pack(side="left", padx=5)
+
+        # 상품 미리보기는 별도 행
         self.stats_preview_label = ctk.CTkLabel(
             stats_frame,
             text="최근: -",
@@ -415,7 +433,7 @@ class ProductCollectorGUI:
             text_color="gray50",
             wraplength=220
         )
-        self.stats_preview_label.pack(pady=(6, 0))
+        self.stats_preview_label.pack(pady=(6, 8))
 
         # 로그 프레임
         log_frame = ctk.CTkFrame(main_frame)
@@ -427,7 +445,7 @@ class ProductCollectorGUI:
 
         ctk.CTkLabel(log_header_frame, text="실시간 로그:", font=("Arial", 12, "bold")).pack(side="left")
 
-        # 오른쪽 버튼들
+        # 오른쪽 버튼들 (간격 8px로 증가)
         # 최근 기록 보기 버튼
         self.history_button = ctk.CTkButton(
             log_header_frame,
@@ -439,7 +457,7 @@ class ProductCollectorGUI:
             fg_color="gray30",
             hover_color="gray40"
         )
-        self.history_button.pack(side="right", padx=(5, 0))
+        self.history_button.pack(side="right", padx=(8, 0))
 
         # 로그 레벨 토글 버튼
         self.log_level_button = ctk.CTkButton(
@@ -452,7 +470,7 @@ class ProductCollectorGUI:
             fg_color="gray30",
             hover_color="gray40"
         )
-        self.log_level_button.pack(side="right", padx=(5, 0))
+        self.log_level_button.pack(side="right", padx=(8, 0))
 
         # 테마 토글 버튼
         self.theme_button = ctk.CTkButton(
@@ -465,7 +483,7 @@ class ProductCollectorGUI:
             fg_color="gray30",
             hover_color="gray40"
         )
-        self.theme_button.pack(side="right", padx=(5, 0))
+        self.theme_button.pack(side="right", padx=(8, 0))
 
         # 로그 복사 버튼
         self.copy_log_button = ctk.CTkButton(
@@ -478,11 +496,21 @@ class ProductCollectorGUI:
             fg_color="gray30",
             hover_color="gray40"
         )
-        self.copy_log_button.pack(side="right", padx=(5, 0))
+        self.copy_log_button.pack(side="right", padx=(8, 0))
 
         # 로그 텍스트 박스 (스크롤바 포함)
         self.log_text = ctk.CTkTextbox(log_frame, font=("Courier", 11))
         self.log_text.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
+    def _on_enter_key(self, event):
+        """Enter 키: 수집 시작"""
+        if not self.is_running:
+            self._start_crawling()
+
+    def _on_escape_key(self, event):
+        """Escape 키: 수집 중지"""
+        if self.is_running:
+            self._stop_crawling()
 
     def _toggle_settings(self):
         """설정 영역 접기/펼치기"""
@@ -499,10 +527,7 @@ class ProductCollectorGUI:
 
     def _on_category_change(self, *args):
         """카테고리 선택 변경 시 호출"""
-        category_name = self.selected_category.get()
-        category_id = self.categories.get(category_name, "N/A")
-        self.category_info_label.configure(text=f"ID: {category_id}")
-        # 카테고리 변경 시 재개 정보도 업데이트
+        # 카테고리 변경 시 재개 정보 업데이트
         if self.resume_var.get():
             self._update_resume_info()
 
@@ -616,13 +641,17 @@ class ProductCollectorGUI:
             # 진행률 업데이트
             if self.collection_mode.get() == "infinite":
                 self.progress_label.configure(text=f"수집: {collected}개 (무한 모드)")
+                self.progress_bar.set(0)  # 무한 모드에서는 프로그레스 바 비활성화
             else:
                 target = int(self.product_count_entry.get()) if self.product_count_entry.get().isdigit() else 0
                 if target > 0:
                     progress_percent = min(100, int(collected / target * 100))
+                    progress_value = min(1.0, collected / target)
                     self.progress_label.configure(text=f"수집: {collected}/{target}개 ({progress_percent}%)")
+                    self.progress_bar.set(progress_value)  # 0.0 ~ 1.0
                 else:
                     self.progress_label.configure(text=f"수집: {collected}개")
+                    self.progress_bar.set(0)
 
             # 통계 패널 업데이트 (숫자 강조)
             self.stats_collected_label.configure(text=f"수집: {collected}개")
@@ -742,8 +771,9 @@ class ProductCollectorGUI:
         self.is_running = True
         self.start_button.configure(state="disabled")
         self.stop_button.configure(state="normal")
-        self.status_label.configure(text="수집 중", text_color="#2196F3")  # 파란색
+        self.status_label.configure(text="▶ 수집 중", text_color="#2196F3")  # 파란색, ▶ 기호
         self.progress_label.configure(text="수집: 0개")
+        self.progress_bar.set(0)  # 프로그레스 바 초기화
 
         # 로그 초기화
         self.log_text.delete("1.0", "end")
@@ -786,16 +816,12 @@ class ProductCollectorGUI:
             # 무한 모드면 product_count=None (무한 수집)
             actual_count = None if is_infinite else product_count
 
-            # 재개 옵션 가져오기
-            resume_mode = self.resume_var.get()
-
-            self.crawler = WomensClothingManualCaptcha(
+            # V2 크롤러 사용 (점진적 수집 최적화)
+            self.crawler = ProgressiveCrawler(
                 product_count=actual_count,
                 headless=False,
-                enable_screenshot=False,
                 category_name=category_name,
-                category_id=category_id,
-                resume=resume_mode  # 재개 옵션 전달
+                category_id=category_id
             )
 
             # 크롤러의 print를 가로채서 로그로 리다이렉트
@@ -803,7 +829,7 @@ class ProductCollectorGUI:
 
             # 크롤링 실행
             self._log("크롤링 시작...")
-            data = loop.run_until_complete(self.crawler.crawl_with_manual_captcha())
+            data = loop.run_until_complete(self.crawler.crawl())
 
             if not self.is_running:
                 self._log("")
@@ -844,10 +870,10 @@ class ProductCollectorGUI:
                 else:
                     self._log("수집 중지됨 (수집된 데이터는 저장됨)")
                 self._log("="*60)
-                self.status_label.configure(text="수집 완료", text_color="#4CAF50")  # 녹색
+                self.status_label.configure(text="✓ 수집 완료", text_color="#4CAF50")  # 녹색, ✓ 기호
             else:
                 self._log("상품 수집 실패!")
-                self.status_label.configure(text="수집 실패", text_color="#F44336")  # 빨간색
+                self.status_label.configure(text="✗ 수집 실패", text_color="#F44336")  # 빨간색, ✗ 기호
 
         except Exception as e:
             self._log(f"오류 발생: {str(e)}")
@@ -861,7 +887,7 @@ class ProductCollectorGUI:
             self.start_button.configure(state="normal")
             self.stop_button.configure(state="disabled")
             if not self.crawler or not self.crawler.products_data:
-                self.status_label.configure(text="대기 중", text_color="white")
+                self.status_label.configure(text="● 대기 중", text_color="white")  # ● 기호
 
     def _redirect_crawler_logs(self):
         """크롤러의 print 출력을 로그로 리다이렉트"""
@@ -921,7 +947,7 @@ class ProductCollectorGUI:
         if self.crawler:
             self.crawler.should_stop = True
 
-        self.status_label.configure(text="중지 중", text_color="#FF9800")  # 주황색
+        self.status_label.configure(text="■ 중지 중", text_color="#FF9800")  # 주황색, ■ 기호
 
     def run(self):
         """GUI 실행"""
