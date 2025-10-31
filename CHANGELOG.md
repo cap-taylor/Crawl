@@ -5,6 +5,33 @@ All notable changes to Naver Shopping Crawler will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.2] - 2025-10-31
+
+### Fixed
+- 크롤러 무한 루프 완전 해결
+  - URL 세트 비교 로직 추가 (동일한 상품 반복 3회 감지 → 자동 종료)
+  - 페이지 끝 감지 강화 (네이버 무한 스크롤 끝 도달 자동 감지)
+  - 중복 카운터 버그 수정 (consecutive_duplicates 전역 선언)
+
+### Changed
+- 연속 중복 임계값 조정 (20개 → 10개, 40개 → 25개)
+- 스크롤 전략 개선 (중복 많으면 1200px, 기본 600px)
+
+### Added
+- 디버깅 로그 추가 (50번 반복마다 상태 출력)
+- 무한 루프 방지 안전장치 (최대 5000회 반복 제한)
+
+## [1.2.1] - 2025-10-17
+
+### Fixed
+- 크롤러 무한 루프 버그 수정
+  - TypeError 수정: brand_name이 None일 때 에러 방지
+  - 연속 중복 20개 감지 시 자동 스크롤 로직 추가
+  - 중복 상품 무한 반복 문제 해결
+
+### Changed
+- 스크롤 최적화: 새 상품 로드 시 즉시 스크롤
+
 ## [1.2.0] - 2025-10-17
 
 ### Added

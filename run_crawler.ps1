@@ -19,11 +19,8 @@ Write-Host ""
 Write-Host "[DEBUG] Error messages will appear here if GUI crashes." -ForegroundColor Yellow
 Write-Host ""
 
-# Move to project directory
-$projectPath = "D:\MyProjects\Crawl"
-if ($PWD.Path -ne $projectPath) {
-    Set-Location $projectPath
-}
+# 경로 설정 (WSL 경로 사용)
+# PowerShell에서 WSL 경로로 직접 실행되므로 경로 변경 불필요
 
 Write-Host "Starting GUI..." -ForegroundColor Green
 Write-Host ""

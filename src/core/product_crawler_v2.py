@@ -35,6 +35,12 @@ class ProgressiveCrawler:
         self.seen_product_ids: Set[str] = set()
         self.db_existing_ids: Set[str] = set()
 
+        # 체크포인트 (마지막 수집 상품 ID)
+        self.last_collected_id: Optional[str] = None
+
+        # URL 세트 비교 (동일한 상품 반복 감지)
+        self.previous_url_set: Set[str] = set()
+
     async def _load_existing_products(self):
         """DB에서 이미 수집한 상품 ID 조회"""
         db = DatabaseConnector()
@@ -84,7 +90,7 @@ class ProgressiveCrawler:
         await asyncio.sleep(2)
 
     async def _collect_visible_products(self, page) -> list:
-        """현재 화면에 보이는 상품 URL 수집"""
+        """현재 화면에 보이는 상품 URL 수집 (최대 30개)"""
         product_elements = await page.query_selector_all('a[href*="/products/"]:has(img)')
 
         if not product_elements:
@@ -95,6 +101,9 @@ class ProgressiveCrawler:
         # None 체크 (캡차 페이지 등에서 상품 못 찾으면 빈 리스트 반환)
         if not product_elements:
             return []
+
+        # 메모리 보호: 최대 30개까지만 수집
+        product_elements = product_elements[:30]
 
         urls = []
         for elem in product_elements:
@@ -175,8 +184,9 @@ class ProgressiveCrawler:
             # 탭 닫기
             await detail_page.close()
 
-            # 성공 - ID 저장
+            # 성공 - ID 저장 + 체크포인트
             self.seen_product_ids.add(product_id)
+            self.last_collected_id = product_id
 
             return {
                 'category': self.category_name,
@@ -294,6 +304,7 @@ class ProgressiveCrawler:
         db.close()
 
         async with async_playwright() as p:
+            browser = None
             try:
                 print("[시작] Firefox 브라우저 실행...")
                 browser = await p.firefox.launch(headless=False, slow_mo=1000)
@@ -364,16 +375,29 @@ class ProgressiveCrawler:
                 print(f"[정보] 화면 보이는 상품 → 수집 → 스크롤 → 반복\n")
 
                 if self.product_count is None:
-                    print("[정보] 무한 모드 - 100개마다 자동 DB 저장\n")
+                    print("[정보] 무한 모드 - 10개마다 자동 DB 저장 (데이터 손실 방지)\n")
 
                 collected_count = 0
                 scroll_count = 0
-                max_scrolls = 50  # 최대 50번 스크롤
                 no_new_products_count = 0
+                consecutive_duplicates = 0  # 연속 중복 카운터 (전역)
+                max_iterations = 5000  # 무한 루프 방지 (5000번 반복 = 약 2-3시간)
+                iteration_count = 0
 
                 import random
 
                 while True:
+                    # 무한 루프 방지
+                    iteration_count += 1
+                    if iteration_count > max_iterations:
+                        print(f"\n[안전 종료] 최대 반복 횟수({max_iterations}) 도달")
+                        print(f"[정보] 수집: {collected_count}개, 스크롤: {scroll_count}회")
+                        break
+
+                    # 디버깅: 50번 반복마다 상태 출력
+                    if iteration_count % 50 == 0:
+                        print(f"\n[디버깅] 반복: {iteration_count}회, 수집: {collected_count}개, 연속중복: {consecutive_duplicates}개, no_new: {no_new_products_count}회")
+
                     # 중지 요청 확인
                     if self.should_stop:
                         print(f"\n[중지] 사용자 요청 ({collected_count}개 수집)")
@@ -386,6 +410,23 @@ class ProgressiveCrawler:
 
                     # 현재 화면 상품 수집
                     visible_urls = await self._collect_visible_products(page)
+
+                    # URL 세트 비교 (동일한 상품 반복 감지)
+                    if visible_urls:
+                        current_url_set = set(visible_urls)
+                        if self.previous_url_set and current_url_set == self.previous_url_set:
+                            no_new_products_count += 1
+                            print(f"\n[경고] 동일한 상품 세트 반복 감지 ({no_new_products_count}회)")
+                            if no_new_products_count >= 3:
+                                print(f"[완료] 동일한 상품만 반복, 페이지 끝 도달")
+                                break
+                        else:
+                            # URL 세트가 변경되었으면 카운터 리셋
+                            if self.previous_url_set and current_url_set != self.previous_url_set:
+                                no_new_products_count = 0
+
+                        # 현재 URL 세트 저장
+                        self.previous_url_set = current_url_set
 
                     if not visible_urls:
                         no_new_products_count += 1
@@ -410,19 +451,17 @@ class ProgressiveCrawler:
                             print("\n[완료] 더 이상 새 상품 없음")
                             break
 
-                        # 스크롤 시도
-                        if scroll_count < max_scrolls:
-                            await page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
-                            await asyncio.sleep(random.uniform(1.5, 2.5))
-                            scroll_count += 1
-                            continue
-                        else:
-                            print(f"\n[완료] 최대 스크롤 도달 ({max_scrolls}회)")
-                            break
+                        # 스크롤 시도 (500px씩 점진적 스크롤, 제한 없음)
+                        await page.evaluate('window.scrollBy(0, 500)')
+                        await asyncio.sleep(random.uniform(1.5, 2.5))
+                        scroll_count += 1
+                        continue
 
-                    # 보이는 상품 하나씩 수집
+                    # 보이는 상품 수집 (한 번에 최대 20개까지만)
                     new_products_this_batch = 0
-                    consecutive_duplicates = 0  # 연속 중복 카운터
+
+                    # 메모리 보호: 한 번에 최대 20개까지만 처리
+                    visible_urls = visible_urls[:20]
 
                     for url in visible_urls:
                         if self.should_stop:
@@ -430,9 +469,15 @@ class ProgressiveCrawler:
                         if self.product_count and collected_count >= self.product_count:
                             break
 
-                        # 연속 중복 20개 이상이면 스크롤 필요
-                        if consecutive_duplicates >= 20:
-                            print(f"\n[스크롤] 연속 중복 {consecutive_duplicates}개, 새 상품 로드...")
+                        # 연속 중복 10개 이상이면 즉시 스크롤 (임계값 낮춤)
+                        if consecutive_duplicates >= 10:
+                            print(f"\n[스크롤 필요] 연속 중복 {consecutive_duplicates}개 감지, 새 상품 로드 중...")
+                            # 즉시 스크롤 (1500px - 확실하게 새 상품 영역으로 이동)
+                            await page.evaluate('window.scrollBy(0, 1500)')
+                            await asyncio.sleep(random.uniform(2.5, 3.5))
+                            scroll_count += 1
+                            consecutive_duplicates = 0  # 리셋
+                            print(f"[스크롤 완료] 새 상품 확인 중...")
                             break
 
                         print(f"[{collected_count + 1}번째] 수집 시도...", end="", flush=True)
@@ -469,12 +514,14 @@ class ProgressiveCrawler:
                                 print(f"  - 현재 세션 수집: {len(self.seen_product_ids)}개")
                                 print(f"{'='*60}\n")
 
-                            # 100개마다 자동 저장 (무한 모드)
-                            if self.product_count is None and collected_count % 100 == 0:
+                            # 10개마다 자동 저장 (무한 모드 - 데이터 손실 방지)
+                            if self.product_count is None and collected_count % 10 == 0:
                                 print(f"\n{'='*60}")
                                 print(f"[자동 저장] {collected_count}개 수집 완료, DB 저장...")
                                 results = save_to_database(self.category_name, self.products_data, skip_duplicates=True)
                                 print(f"[완료] 신규: {results['saved']}개, 중복: {results['skipped']}개")
+                                if self.last_collected_id:
+                                    print(f"[체크포인트] 마지막 상품 ID: {self.last_collected_id}")
                                 self.products_data.clear()
                                 print(f"{'='*60}\n")
                         elif is_dup_flag[0]:
@@ -488,51 +535,80 @@ class ProgressiveCrawler:
                     # 새 상품이 있었으면 카운터 리셋
                     if new_products_this_batch > 0:
                         no_new_products_count = 0
+                        consecutive_duplicates = 0  # 새 상품 발견 시 중복 카운터도 리셋
                     else:
                         no_new_products_count += 1
 
-                    # 스크롤 (새 상품 로드)
-                    if scroll_count < max_scrolls:
-                        await page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
-                        await asyncio.sleep(random.uniform(1.5, 2.5))
-                        scroll_count += 1
-                    else:
+                    # 연속 중복 25개 이상 = 더 이상 새 상품 없음 (임계값 조정)
+                    if consecutive_duplicates >= 25:
+                        print(f"\n[완료] 연속 중복 {consecutive_duplicates}개, 더 이상 새 상품 없음")
                         break
+
+                    # 스크롤 전략: 중복 많으면 큰 스크롤 (임계값 조정)
+                    if consecutive_duplicates >= 7:
+                        # 중복이 많으면 더 크게 스크롤 (1200px)
+                        await page.evaluate('window.scrollBy(0, 1200)')
+                        await asyncio.sleep(random.uniform(2.5, 3.5))
+                    else:
+                        # 기본 스크롤 (600px)
+                        await page.evaluate('window.scrollBy(0, 600)')
+                        await asyncio.sleep(random.uniform(1.5, 2.5))
+                    scroll_count += 1
 
                 print(f"\n{'='*60}")
                 print(f"[완료] 총 {collected_count}개 상품 수집")
                 print(f"[스크롤] {scroll_count}회")
                 print(f"{'='*60}")
 
-                # 브라우저 닫기
-                print("\n브라우저를 3초 후 닫습니다...")
-                await asyncio.sleep(3)
-                await browser.close()
-
-                # DB 세션 종료
-                db = DatabaseConnector()
-                db.connect()
-                if self.should_stop:
-                    db.end_crawl_session(self.history_id, status='paused')
-                else:
-                    db.end_crawl_session(self.history_id, status='completed')
-                db.close()
-
                 return self.products_data
 
             except Exception as e:
-                print(f"\n[오류] {str(e)}")
+                print(f"\n{'='*80}")
+                print(f"[치명적 오류 발생]")
+                print(f"{'='*80}")
+                print(f"오류 메시지: {str(e)}")
+                print(f"수집 상태: {collected_count}개 수집 완료")
+                print(f"스크롤: {scroll_count}회")
+                print(f"마지막 상품 ID: {self.last_collected_id}")
+                print(f"\n상세 스택 트레이스:")
                 import traceback
                 traceback.print_exc()
-
-                # DB 세션 종료 (에러)
-                if self.history_id:
-                    db = DatabaseConnector()
-                    db.connect()
-                    db.end_crawl_session(self.history_id, status='failed', error_message=str(e))
-                    db.close()
+                print(f"\n복구 방법:")
+                print(f"  1. DB에 {collected_count}개 저장됨 (중복 체크로 재시작 가능)")
+                print(f"  2. 브라우저를 수동으로 닫으세요")
+                print(f"  3. 프로그램을 다시 시작하세요")
+                print(f"{'='*80}\n")
 
                 return None
+
+            finally:
+                # 브라우저 정리 (항상 실행)
+                try:
+                    if browser:
+                        print("\n[정리] 브라우저 종료 중...")
+                        await browser.close()
+                        print("[정리] 브라우저 종료 완료")
+                except Exception as cleanup_error:
+                    print(f"[경고] 브라우저 종료 실패: {cleanup_error}")
+
+                # DB 세션 종료 (항상 실행)
+                try:
+                    db = DatabaseConnector()
+                    db.connect()
+                    if self.should_stop:
+                        db.end_crawl_session(self.history_id, status='paused')
+                        print(f"[DB] 세션 일시중지 기록")
+                    elif collected_count > 0:
+                        db.end_crawl_session(self.history_id, status='completed')
+                        print(f"[DB] 세션 완료 기록")
+                    else:
+                        db.end_crawl_session(self.history_id, status='failed', error_message='No data collected')
+                        print(f"[DB] 세션 실패 기록")
+                    db.close()
+                except Exception as db_error:
+                    print(f"[경고] DB 세션 종료 실패: {db_error}")
+
+                print("[정리] 모든 리소스 정리 완료\n")
 
     def save_to_db(self, skip_duplicates=True):
         """DB 저장"""
