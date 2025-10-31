@@ -3,7 +3,7 @@
 > 이 문서는 네이버 쇼핑 크롤링 개발 과정에서 겪은 모든 시행착오와 해결책을 기록합니다.
 > **절대 같은 실수를 반복하지 않기 위한 필수 참고 문서입니다.**
 
-## 📅 최종 업데이트: 2025-10-31 17:45
+## 📅 최종 업데이트: 2025-10-31 19:25
 
 ---
 
@@ -416,6 +416,62 @@ detail_info = await self._collect_detail_info(detail_page)
 - `src/core/product_crawler_v2.py:444-463` (Stealth 스크립트)
 - `src/core/product_crawler_v2.py:269-283` (에러 체크 이동)
 - `src/core/product_crawler_v2.py:241-245` (🔴 networkidle 15초 + 예외 처리 5초)
+
+---
+
+## 🐍 Python 캐시 문제 (2025-10-31)
+
+### 코드 수정 후 변경사항 미반영
+**문제**:
+- 코드를 수정했는데 실행하면 여전히 이전 코드로 동작
+- 봇 차단 수정 (networkidle 15초, 예외 처리 5초) 했는데 여전히 같은 에러 발생
+
+**원인**:
+- Python이 `__pycache__/` 폴더에 바이트코드(.pyc) 캐싱
+- 소스 코드(.py) 수정해도 캐시된 바이트코드가 우선 실행됨
+- 특히 import된 모듈(src/core/product_crawler_v2.py)은 캐시 영향 큼
+
+**증상**:
+```bash
+# 코드 확인 시
+$ grep "timeout=15000" src/core/product_crawler_v2.py
+✅ 찾아짐 (코드는 수정됨)
+
+# 실행 시
+바탕화면 바로가기 실행 → 여전히 "상품이 존재하지 않습니다" 에러
+(이전 timeout=8000 코드가 실행되는 것처럼 동작)
+```
+
+**✅ 해결 방법**:
+```bash
+# 1. __pycache__ 폴더 삭제
+find /home/dino/MyProjects/Crawl -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null
+
+# 2. .pyc 파일 삭제
+find /home/dino/MyProjects/Crawl -type f -name "*.pyc" -delete 2>/dev/null
+
+# 3. 실행 중인 Python 프로세스 종료
+pkill -9 -f "python3.*product_collector"
+
+# 4. 다시 실행
+바탕화면 바로가기 클릭
+```
+
+**핵심 교훈**:
+- 🔴 **중요한 코드 수정 후 반드시 Python 캐시 삭제!**
+- ✅ 특히 크롤러 핵심 로직(src/core/) 수정 시 필수
+- ✅ "코드 수정했는데 안 먹힌다" → 99% 캐시 문제
+- ✅ Git 커밋 전에도 캐시 삭제 후 테스트
+
+**예방**:
+```bash
+# .gitignore에 추가 (이미 되어 있음)
+__pycache__/
+*.pyc
+*.pyo
+
+# 개발 중 자주 캐시 삭제하는 습관
+```
 
 ---
 
