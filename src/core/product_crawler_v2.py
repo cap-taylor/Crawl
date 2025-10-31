@@ -202,12 +202,18 @@ class ProgressiveCrawler:
             # 4. 새 탭 확인
             pages_after = len(context.pages)
 
-            # 같은 탭에서 열렸으면 스킵 (네이버 링크에 target="_blank" 없음)
+            # ✅ 새 탭 확인 (문서 Line 1048-1071 방식)
             if pages_after <= pages_before:
                 print(f"\n[스킵] 같은 탭에서 열림 (ID:{product_id})")
-                # 원래 페이지로 돌아가기
-                await page.go_back()
-                await asyncio.sleep(random.uniform(2.0, 3.0))
+                # ✅ go_back() 대신 카테고리 페이지 확인 후 이동
+                # 같은 탭에서 열렸다 = 상품 페이지로 이동된 상태
+                # 카테고리 페이지로 돌아가야 다음 상품 클릭 가능
+                current_url = page.url
+                if '/products/' in current_url:
+                    # 상품 페이지에 있으면 뒤로 가기
+                    await page.go_back()
+                    await asyncio.sleep(random.uniform(2.0, 3.0))
+                # 다음 상품으로 (문서: continue)
                 return None
 
             # 5. 새로 열린 탭 가져오기
@@ -231,10 +237,12 @@ class ProgressiveCrawler:
                 return None
 
             # 페이지 로드 완전 대기 (JavaScript 렌더링 완료까지)
+            # ✅ 브랜드 페이지는 이미지 많아서 더 오래 걸림
             try:
-                await detail_page.wait_for_load_state('networkidle', timeout=8000)
+                await detail_page.wait_for_load_state('networkidle', timeout=15000)
             except:
-                await asyncio.sleep(2.0)
+                # ✅ networkidle 타임아웃 시에도 충분히 대기 (브랜드 페이지 로딩 중)
+                await asyncio.sleep(5.0)
 
             # ✅ 인간처럼 행동: 페이지 읽기 시간 (3-5초 체류)
             await asyncio.sleep(random.uniform(3.0, 5.0))
@@ -545,6 +553,11 @@ class ProgressiveCrawler:
                 except:
                     pass
                 await asyncio.sleep(2)
+
+                # ✅ 카테고리 진입 후 페이지 둘러보기 시간 (봇 차단 방지)
+                # 사람은 페이지 진입 후 바로 클릭하지 않고 5-8초 둘러봄
+                import random
+                await asyncio.sleep(random.uniform(5.0, 8.0))
 
                 # 5. 점진적 수집 시작
                 print(f"\n[점진적 수집] 시작 (DB 중복: {len(self.db_existing_ids)}개 스킵)")
