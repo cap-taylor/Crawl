@@ -1,8 +1,25 @@
 # 🎯 Crawl 프로젝트 - Claude 필수 지침
-> Last Updated: 2025-10-31 13:07
+> Last Updated: 2025-10-31 17:35
 
 
 ## 🔴 **절대 금지 (NEVER DO THIS)**
+
+### 🚨 크롤링 문제 해결 (최우선!)
+**크롤링 관련 문제 발생 시 무조건 문서부터!**
+- ❌ **바로 코드 수정 시도 금지** → 시행착오 반복!
+- ✅ **반드시 먼저 확인**: `docs/CRAWLING_LESSONS_LEARNED.md`
+- ✅ **Grep 검색**: 키워드로 문서 내 해결책 찾기
+
+**문서에 이미 있는 해결책들**:
+- 네이버 메인 → 쇼핑 진입 방법 (셀렉터, Locator API)
+- 캡차 회피 전략
+- 새 탭 전환 패턴
+- networkidle vs domcontentloaded
+- 모든 에러 케이스별 해결 방법
+
+**이 규칙을 어기면**: 사용자가 짜증남 → "시행착오 문서를 왜 만들었냐"
+
+---
 
 ### 코드 품질
 - 오버 엔지니어링 절대 금지(간단한 것을 복잡하게 만들지마)
@@ -133,6 +150,17 @@
 - 경로: `/home/dino/MyProjects/Crawl`
 - Windows 접근: `\\wsl.localhost\Ubuntu-22.04\home\dino\MyProjects\Crawl`
 
+### 바로가기 (고정 - 절대 변경 금지!)
+**Windows 바탕화면 바로가기 경로:**
+```
+C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -ExecutionPolicy Bypass -File "\\wsl.localhost\Ubuntu-22.04\home\dino\MyProjects\Crawl\run_crawler.ps1"
+```
+
+**중요:**
+- 바로가기 경로는 고정 (변경하지 말 것!)
+- GUI 업데이트 시 `run_crawler.ps1` 파일만 수정
+- 현재 실행 파일: `product_collector_gui.py` (단일 크롤링 방식)
+
 ### PostgreSQL 데이터베이스
 - **데이터베이스명**: naver
 - **사용자**: postgres
@@ -179,3 +207,46 @@
 ### 인코딩
 - .bat/.ps1 파일: 영어만 (한글 → 깨짐)
 - 증상: '쒖씠', '┰???ㅽ뻉'
+### GUI 창이 작업표시줄에만 나타나는 문제 (2025-10-31)
+**증상**:
+- 바탕화면 바로가기 실행 시 창이 화면에 안 나타남
+- 작업 표시줄에만 아이콘 보임
+- Alt+Tab으로도 찾을 수 없음
+
+**원인**:
+- customtkinter 5.2.0 + WSLg (Windows 11) 호환성 문제
+- WSLg 창 관리 캐시 충돌
+
+**해결 (3단계)**:
+1. **customtkinter 다운그레이드**:
+   ```bash
+   pip3 install customtkinter==5.1.3
+   ```
+
+2. **WSL 재시작 (PowerShell)**:
+   ```powershell
+   wsl --shutdown
+   ```
+
+3. **바탕화면 바로가기 다시 실행**
+
+**예방**:
+- `requirements.txt` 사용: `pip3 install -r requirements.txt`
+- customtkinter 5.1.3 버전 고정 유지
+
+**상세**: `docs/CRAWLING_LESSONS_LEARNED.md` 참조
+
+---
+
+## 📦 **의존성 관리**
+
+### requirements.txt
+프로젝트 루트에 `requirements.txt` 파일로 의존성 관리:
+
+```bash
+pip3 install -r requirements.txt
+```
+
+**중요**:
+- `customtkinter==5.1.3` 버전 고정 (WSLg 호환성)
+- 버전 업그레이드 시 반드시 테스트 후 적용

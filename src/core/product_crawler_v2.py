@@ -90,29 +90,58 @@ class ProgressiveCrawler:
         await asyncio.sleep(2)
 
     async def _collect_visible_products(self, page) -> list:
-        """현재 화면에 보이는 상품 URL 수집 (최대 30개)"""
-        product_elements = await page.query_selector_all('a[href*="/products/"]:has(img)')
+        """현재 화면에 보이는 상품 URL 수집 (viewport 내부만)"""
+        # JavaScript로 viewport에 보이는 상품만 필터링
+        urls = await page.evaluate("""
+            () => {
+                const products = Array.from(document.querySelectorAll('a[href*="/products/"]'));
+                const viewportHeight = window.innerHeight;
+                const scrollTop = window.scrollY || window.pageYOffset;
 
-        if not product_elements:
-            product_elements = await self.helper.try_selectors(
-                page, SELECTORS['product_links'], "상품 링크", multiple=True
-            )
+                const visibleProducts = products.filter(elem => {
+                    const rect = elem.getBoundingClientRect();
+                    const absoluteTop = rect.top + scrollTop;
+                    const absoluteBottom = rect.bottom + scrollTop;
 
-        # None 체크 (캡차 페이지 등에서 상품 못 찾으면 빈 리스트 반환)
-        if not product_elements:
-            return []
+                    // viewport 내부 또는 viewport 바로 아래 (다음 스크롤 영역)
+                    return absoluteTop < scrollTop + viewportHeight * 2 &&
+                           absoluteBottom > scrollTop - viewportHeight;
+                });
 
-        # 메모리 보호: 최대 30개까지만 수집
-        product_elements = product_elements[:30]
+                // URL 추출 (최대 30개)
+                return visibleProducts
+                    .slice(0, 30)
+                    .map(elem => elem.href)
+                    .filter(href => href && href.includes('/products/'));
+            }
+        """)
 
-        urls = []
-        for elem in product_elements:
-            try:
-                href = await elem.get_attribute('href')
-                if href and '/products/' in href and re.search(r'/products/\d+', href):
-                    urls.append(href)
-            except:
-                continue
+        if not urls:
+            # 폴백: 기존 방식
+            product_elements = await page.query_selector_all('a[href*="/products/"]:has(img)')
+            if not product_elements:
+                product_elements = await self.helper.try_selectors(
+                    page, SELECTORS['product_links'], "상품 링크", multiple=True
+                )
+
+            if not product_elements:
+                return []
+
+            # viewport 근처만 (스크롤 위치 기준)
+            product_elements = product_elements[:30]
+
+            urls = []
+            for elem in product_elements:
+                try:
+                    href = await elem.get_attribute('href')
+                    if href and '/products/' in href and re.search(r'/products/\d+', href):
+                        if href.startswith('/'):
+                            href = f"https://shopping.naver.com{href}"
+                        elif not href.startswith('http'):
+                            href = f"https://shopping.naver.com/{href}"
+                        urls.append(href)
+                except:
+                    continue
 
         return urls
 
@@ -130,45 +159,122 @@ class ProgressiveCrawler:
             print(f" [SKIP-중복] ID:{product_id}")
             if is_duplicate_ref is not None:
                 is_duplicate_ref[0] = True  # 중복 플래그 설정
+
+            # 중복 체크에도 짧은 대기 (봇 차단 방지 - 자연스러운 스캔 패턴)
+            await asyncio.sleep(random.uniform(0.3, 0.6))
             return None
 
         try:
-            # 랜덤 대기 (5-12초)
-            await asyncio.sleep(random.uniform(5.0, 12.0))
+            # 새 상품 발견 시 추가 대기 (중복 체크 직후 바로 클릭하면 의심스러움)
+            await asyncio.sleep(random.uniform(1.5, 2.5))
 
-            # 새 탭에서 열기
-            await page.evaluate(f'window.open("{url}", "_blank")')
-            await asyncio.sleep(2)
+            # 랜덤 대기 (2-5초로 단축 - 위에서 이미 대기했으므로)
+            await asyncio.sleep(random.uniform(2.0, 5.0))
 
-            # 새 탭 찾기
-            all_pages = context.pages
-            if len(all_pages) <= 1:
+            # 같은 브라우저의 새 탭으로 열기 (Ctrl+클릭 방식)
+            # 1. 링크 요소 찾기
+            link_elem = await page.query_selector(f'a[href*="{product_id}"]')
+            if not link_elem:
+                # selector가 복잡할 수 있으니 모든 상품 링크 찾아서 URL 매칭
+                all_links = await page.query_selector_all('a[href*="/products/"]')
+                for link in all_links:
+                    href = await link.get_attribute('href')
+                    if product_id in href:
+                        link_elem = link
+                        break
+
+            if not link_elem:
+                print(f"\n[오류] 링크 요소를 찾을 수 없음 (ID:{product_id})")
                 return None
 
-            detail_page = all_pages[-1]
-            await detail_page.wait_for_load_state('domcontentloaded')
+            # 2. 현재 탭 개수 확인
+            pages_before = len(context.pages)
 
-            # 에러 페이지 체크
-            if await detail_page.query_selector('text="현재 서비스 접속이 불가합니다"'):
+            # 3. 단순 클릭 (JavaScript 조작 없음 - 봇 감지 회피)
+            # 마우스를 요소 위로 이동
+            await link_elem.hover()
+            await asyncio.sleep(random.uniform(0.8, 1.5))
+
+            # ✅ 아무 조작 없이 단순 클릭 (문서 Line 932-948 방식)
+            await link_elem.click()
+            await asyncio.sleep(random.uniform(4.0, 6.0))  # 새 탭 열림 충분히 대기
+
+            # 4. 새 탭 확인
+            pages_after = len(context.pages)
+
+            # 같은 탭에서 열렸으면 스킵 (네이버 링크에 target="_blank" 없음)
+            if pages_after <= pages_before:
+                print(f"\n[스킵] 같은 탭에서 열림 (ID:{product_id})")
+                # 원래 페이지로 돌아가기
+                await page.go_back()
+                await asyncio.sleep(random.uniform(2.0, 3.0))
+                return None
+
+            # 5. 새로 열린 탭 가져오기
+            detail_page = context.pages[-1]
+
+            # 페이지 로드 대기 (포커스는 자동으로 이동됨)
+            try:
+                await detail_page.wait_for_load_state('domcontentloaded', timeout=15000)
+                await asyncio.sleep(random.uniform(2.0, 3.0))
+            except Exception as nav_error:
+                print(f"\n[오류] 페이지 로드 실패 (ID:{product_id}): {str(nav_error)[:60]}")
                 await detail_page.close()
+                await page.bring_to_front()
                 return None
 
-            # URL 검증
+            # URL 검증 (빠른 체크는 괜찮음)
             current_url = detail_page.url
             if not re.search(r'/products/\d+', current_url):
                 await detail_page.close()
+                await page.bring_to_front()
                 return None
 
-            # 페이지 로드 대기
+            # 페이지 로드 완전 대기 (JavaScript 렌더링 완료까지)
             try:
-                await detail_page.wait_for_load_state('networkidle', timeout=3000)
+                await detail_page.wait_for_load_state('networkidle', timeout=8000)
             except:
-                pass
+                await asyncio.sleep(2.0)
 
-            # 스크롤 (검색태그 위치)
-            scroll_percent = random.uniform(0.40, 0.50)
-            await detail_page.evaluate(f'window.scrollTo(0, document.body.scrollHeight * {scroll_percent})')
-            await asyncio.sleep(random.uniform(0.8, 1.5))
+            # ✅ 인간처럼 행동: 페이지 읽기 시간 (3-5초 체류)
+            await asyncio.sleep(random.uniform(3.0, 5.0))
+
+            # ✅ 마우스 움직임 시뮬레이션 (자연스러운 탐색)
+            await detail_page.mouse.move(
+                random.randint(200, 800),
+                random.randint(100, 400)
+            )
+            await asyncio.sleep(random.uniform(0.5, 1.0))
+
+            # ✅ 부드러운 다단계 스크롤 (인간은 조금씩 스크롤)
+            # 1단계: 조금 스크롤 (상품 정보 보기)
+            await detail_page.evaluate('window.scrollBy(0, 300)')
+            await asyncio.sleep(random.uniform(1.5, 2.5))
+
+            # 2단계: 중간 위치 (이미지/설명 보기)
+            await detail_page.evaluate('window.scrollBy(0, 400)')
+            await asyncio.sleep(random.uniform(1.5, 2.5))
+
+            # 3단계: 검색태그 위치 (40% 근처)
+            # 정확한 계산 대신 대략적인 스크롤
+            await detail_page.evaluate('window.scrollBy(0, 500)')
+            await asyncio.sleep(random.uniform(1.0, 2.0))
+
+            # ✅ 에러 페이지 체크 (모든 인간 행동 시뮬레이션 후 체크 - 봇 감지 회피)
+            error_selectors = [
+                'text="상품이 존재하지 않습니다"',
+                'text="현재 서비스 접속이 불가합니다"',
+                'text="일시적인 오류"',
+                'text="서비스 접근이 제한"',
+                'text="잠시 후 다시 시도"'
+            ]
+
+            for selector in error_selectors:
+                if await detail_page.query_selector(selector):
+                    print(f"\n[경고] 봇 차단 감지: {selector}")
+                    await detail_page.close()
+                    await page.bring_to_front()
+                    return None
 
             # 상품 정보 수집
             detail_info = await self._collect_detail_info(detail_page)
@@ -179,10 +285,15 @@ class ProgressiveCrawler:
             if (not product_name or len(product_name) < 5 or
                 any(kw in product_name for kw in invalid_keywords)):
                 await detail_page.close()
+                await page.bring_to_front()
                 return None
 
             # 탭 닫기
             await detail_page.close()
+
+            # 원래 페이지로 돌아가기 (명시적 focus)
+            await page.bring_to_front()
+            await asyncio.sleep(random.uniform(0.5, 1.0))
 
             # 성공 - ID 저장 + 체크포인트
             self.seen_product_ids.add(product_id)
@@ -196,9 +307,12 @@ class ProgressiveCrawler:
             }
 
         except Exception as e:
+            # 에러 발생 시 열린 탭 정리
             try:
                 if len(context.pages) > 1:
                     await context.pages[-1].close()
+                # 원래 페이지로 돌아가기
+                await page.bring_to_front()
             except:
                 pass
             return None
@@ -305,36 +419,80 @@ class ProgressiveCrawler:
 
         async with async_playwright() as p:
             browser = None
+            # 변수 초기화 (exception handler에서 사용)
+            collected_count = 0
+            scroll_count = 0
             try:
                 print("[시작] Firefox 브라우저 실행...")
-                browser = await p.firefox.launch(headless=False, slow_mo=1000)
+                browser = await p.firefox.launch(headless=self.headless, slow_mo=500)
                 context = await browser.new_context(
                     no_viewport=True,
-                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0",
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:131.0) Gecko/20100101 Firefox/131.0",
                     locale='ko-KR',
-                    timezone_id='Asia/Seoul'
+                    timezone_id='Asia/Seoul',
+                    # 추가 헤더로 더 자연스럽게
+                    extra_http_headers={
+                        'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+                        'Accept-Encoding': 'gzip, deflate, br',
+                        'DNT': '1',
+                        'Connection': 'keep-alive',
+                        'Upgrade-Insecure-Requests': '1'
+                    }
                 )
+
+                # Stealth 스크립트: navigator.webdriver 제거 (봇 감지 회피)
+                await context.add_init_script("""
+                    Object.defineProperty(navigator, 'webdriver', {
+                        get: () => undefined
+                    });
+
+                    Object.defineProperty(navigator, 'plugins', {
+                        get: () => [1, 2, 3]
+                    });
+
+                    Object.defineProperty(navigator, 'languages', {
+                        get: () => ['ko-KR', 'ko', 'en-US', 'en']
+                    });
+                """)
+
                 page = await context.new_page()
 
                 # 1. 네이버 메인
                 print("[접속] 네이버 메인...")
                 await page.goto('https://www.naver.com')
-                await page.wait_for_load_state('domcontentloaded')
+                await page.wait_for_load_state('domcontentloaded')  # networkidle 절대 사용 금지!
                 await asyncio.sleep(3)
 
-                # 2. 쇼핑 클릭
+                # 2. 쇼핑 버튼 클릭
                 print("[클릭] 쇼핑...")
-                await page.evaluate('window.scrollTo(0, 0)')
+                await page.evaluate('window.scrollTo(0, 0)')  # 상단으로 스크롤 필수!
                 await asyncio.sleep(1)
-                shopping_link = page.locator('#shortcutArea > ul > li:nth-child(4) > a')
+
+                shopping_selector = '#shortcutArea > ul > li:nth-child(4) > a'
+                shopping_link = page.locator(shopping_selector)  # Locator API 사용
                 await shopping_link.click(timeout=10000)
                 await asyncio.sleep(3)
+                print("[성공] 쇼핑 클릭 완료")
 
                 # 새 탭 전환
                 all_pages = context.pages
                 if len(all_pages) > 1:
                     page = all_pages[-1]
-                    await page.wait_for_load_state('networkidle')
+                    print(f"[전환] 새 탭으로 전환 (총 {len(all_pages)}개 탭)")
+                    await page.wait_for_load_state('networkidle', timeout=15000)
+
+                    # URL 검증
+                    current_url = page.url
+                    print(f"[확인] 현재 URL: {current_url[:60]}...")
+                    if 'shopping.naver.com' not in current_url:
+                        print(f"[경고] 쇼핑 페이지가 아닙니다: {current_url}")
+                        print("[안내] 브라우저에서 수동으로 네이버 쇼핑으로 이동해주세요")
+                        await asyncio.sleep(10)
+                else:
+                    print(f"[경고] 새 탭이 열리지 않았습니다 (현재 {len(all_pages)}개 탭)")
+                    print("[안내] 브라우저에서 수동으로 네이버 쇼핑으로 이동해주세요")
+                    await asyncio.sleep(10)
 
                 # 캡차 체크
                 await asyncio.sleep(2)
@@ -343,20 +501,38 @@ class ProgressiveCrawler:
 
                 # 3. 카테고리 클릭
                 print("[클릭] 카테고리 메뉴...")
-                category_btn = await page.wait_for_selector('button:has-text("카테고리")')
-                await category_btn.click()
-
-                # 메뉴 열림 대기
                 try:
-                    await page.wait_for_selector('a[data-name="여성의류"]', timeout=5000, state='visible')
-                except:
-                    await asyncio.sleep(3)
+                    category_btn = await page.wait_for_selector('button:has-text("카테고리")', timeout=15000, state='visible')
+                    if not category_btn:
+                        raise Exception("카테고리 버튼을 찾을 수 없습니다")
+
+                    await category_btn.click()
+                    print("[성공] 카테고리 메뉴 열림")
+                    await asyncio.sleep(2)  # 메뉴 애니메이션 대기
+                except Exception as e:
+                    print(f"[오류] 카테고리 메뉴 클릭 실패: {str(e)}")
+                    print("[안내] 브라우저에서 수동으로 카테고리 메뉴를 클릭해주세요")
+                    await asyncio.sleep(10)
 
                 # 4. 카테고리 선택
                 print(f"[클릭] {self.category_name}...")
-                womens = await page.wait_for_selector(f'a[data-name="{self.category_name}"]', timeout=10000)
-                await womens.click()
-                await asyncio.sleep(5)
+                try:
+                    # 메뉴 항목이 보일 때까지 대기
+                    category_link = await page.wait_for_selector(
+                        f'a[data-name="{self.category_name}"]',
+                        timeout=15000,
+                        state='visible'
+                    )
+                    if not category_link:
+                        raise Exception(f"{self.category_name} 카테고리를 찾을 수 없습니다")
+
+                    await category_link.click()
+                    print(f"[성공] {self.category_name} 선택 완료")
+                    await asyncio.sleep(5)
+                except Exception as e:
+                    print(f"[오류] {self.category_name} 선택 실패: {str(e)}")
+                    print(f"[안내] 브라우저에서 수동으로 '{self.category_name}' 카테고리를 클릭해주세요")
+                    await asyncio.sleep(15)
 
                 # 캡차 체크
                 captcha_elem = await self.helper.try_selectors(page, SELECTORS['captcha_indicators'], "캡차")
@@ -381,18 +557,19 @@ class ProgressiveCrawler:
                 scroll_count = 0
                 no_new_products_count = 0
                 consecutive_duplicates = 0  # 연속 중복 카운터 (전역)
-                max_iterations = 5000  # 무한 루프 방지 (5000번 반복 = 약 2-3시간)
                 iteration_count = 0
 
                 import random
 
                 while True:
-                    # 무한 루프 방지
+                    # 무한 루프 방지 (제한 모드에서만 - 버그 방지용)
                     iteration_count += 1
-                    if iteration_count > max_iterations:
-                        print(f"\n[안전 종료] 최대 반복 횟수({max_iterations}) 도달")
+                    if self.product_count is not None and iteration_count > 5000:
+                        # 제한 모드(예: 3개 수집)에서만 5000회 제한
+                        print(f"\n[안전 종료] 최대 반복 횟수(5000) 도달 (버그 방지)")
                         print(f"[정보] 수집: {collected_count}개, 스크롤: {scroll_count}회")
                         break
+                    # 무한 모드(product_count=None)에서는 제한 없음!
 
                     # 디버깅: 50번 반복마다 상태 출력
                     if iteration_count % 50 == 0:
@@ -416,10 +593,22 @@ class ProgressiveCrawler:
                         current_url_set = set(visible_urls)
                         if self.previous_url_set and current_url_set == self.previous_url_set:
                             no_new_products_count += 1
-                            print(f"\n[경고] 동일한 상품 세트 반복 감지 ({no_new_products_count}회)")
-                            if no_new_products_count >= 3:
-                                print(f"[완료] 동일한 상품만 반복, 페이지 끝 도달")
+                            print(f"\n[경고] 동일한 상품 세트 반복 ({no_new_products_count}회) - 큰 스크롤로 넘어갑니다...")
+
+                            # 10회 이상 반복되면 페이지 끝일 가능성
+                            if no_new_products_count >= 10:
+                                print(f"\n[종료] 동일 상품 세트 10회 반복 - 페이지 끝에 도달한 것으로 판단")
                                 break
+
+                            # 동일한 상품 세트가 반복되면 대폭 스크롤 (2500px + 1500px)
+                            await page.evaluate('window.scrollBy(0, 2500)')
+                            await asyncio.sleep(random.uniform(3.5, 5.0))
+
+                            await page.evaluate('window.scrollBy(0, 1500)')
+                            await asyncio.sleep(random.uniform(2.5, 3.5))
+
+                            scroll_count += 2
+                            continue  # 다시 상품 수집 시도
                         else:
                             # URL 세트가 변경되었으면 카운터 리셋
                             if self.previous_url_set and current_url_set != self.previous_url_set:
@@ -447,11 +636,8 @@ class ProgressiveCrawler:
                             print("="*60 + "\n")
                             break
 
-                        if no_new_products_count >= 3:
-                            print("\n[완료] 더 이상 새 상품 없음")
-                            break
-
-                        # 스크롤 시도 (500px씩 점진적 스크롤, 제한 없음)
+                        # 무한 크롤링: 상품이 안 보여도 계속 스크롤 시도
+                        print(f"\n[스크롤] 상품 없음 ({no_new_products_count}회) - 계속 스크롤...")
                         await page.evaluate('window.scrollBy(0, 500)')
                         await asyncio.sleep(random.uniform(1.5, 2.5))
                         scroll_count += 1
@@ -459,31 +645,42 @@ class ProgressiveCrawler:
 
                     # 보이는 상품 수집 (한 번에 최대 20개까지만)
                     new_products_this_batch = 0
+                    need_immediate_scroll = False  # 즉시 스크롤 플래그
 
                     # 메모리 보호: 한 번에 최대 20개까지만 처리
                     visible_urls = visible_urls[:20]
 
-                    for url in visible_urls:
+                    # 연속 중복 10개 이상이면 즉시 스크롤 (for 루프 진입 전 체크)
+                    if consecutive_duplicates >= 10:
+                        print(f"\n[스크롤 필요] 연속 중복 {consecutive_duplicates}개 감지, 새 상품 로드 중...")
+
+                        # 큰 스크롤 (2500px) + 충분한 대기 시간
+                        await page.evaluate('window.scrollBy(0, 2500)')
+                        await asyncio.sleep(random.uniform(3.5, 5.0))  # 새 상품 로드 대기
+
+                        # 추가 스크롤 (네이버 무한 스크롤 트리거)
+                        await page.evaluate('window.scrollBy(0, 1500)')
+                        await asyncio.sleep(random.uniform(3.0, 4.5))
+
+                        scroll_count += 2
+                        consecutive_duplicates = 0  # 리셋
+                        print(f"[스크롤 완료] 새 상품 확인 중...")
+                        continue  # while 루프 처음으로 돌아가서 새 상품 수집
+
+                    for idx, url in enumerate(visible_urls):
                         if self.should_stop:
                             break
                         if self.product_count and collected_count >= self.product_count:
-                            break
-
-                        # 연속 중복 10개 이상이면 즉시 스크롤 (임계값 낮춤)
-                        if consecutive_duplicates >= 10:
-                            print(f"\n[스크롤 필요] 연속 중복 {consecutive_duplicates}개 감지, 새 상품 로드 중...")
-                            # 즉시 스크롤 (1500px - 확실하게 새 상품 영역으로 이동)
-                            await page.evaluate('window.scrollBy(0, 1500)')
-                            await asyncio.sleep(random.uniform(2.5, 3.5))
-                            scroll_count += 1
-                            consecutive_duplicates = 0  # 리셋
-                            print(f"[스크롤 완료] 새 상품 확인 중...")
                             break
 
                         print(f"[{collected_count + 1}번째] 수집 시도...", end="", flush=True)
 
                         is_dup_flag = [False]  # 중복 플래그 (리스트로 참조 전달)
                         product_data = await self._crawl_product_detail(page, context, url, is_dup_flag)
+
+                        # 5개 연속 중복마다 더 긴 대기 (인간적인 스캔 패턴)
+                        if is_dup_flag[0] and consecutive_duplicates > 0 and consecutive_duplicates % 5 == 0:
+                            await asyncio.sleep(random.uniform(1.5, 2.5))
 
                         if product_data:
                             self.products_data.append(product_data)
@@ -512,6 +709,12 @@ class ProgressiveCrawler:
                                 print(f"  - 검색태그: {tags_count}개")
                                 print(f"  - DB 기존 중복: {len(self.db_existing_ids)}개")
                                 print(f"  - 현재 세션 수집: {len(self.seen_product_ids)}개")
+
+                                # 100개마다 메모리 상태 출력
+                                if collected_count % 100 == 0:
+                                    print(f"  - 열린 브라우저 탭: {len(context.pages)}개")
+                                    print(f"  - 스크롤 횟수: {scroll_count}회")
+
                                 print(f"{'='*60}\n")
 
                             # 10개마다 자동 저장 (무한 모드 - 데이터 손실 방지)
@@ -523,6 +726,13 @@ class ProgressiveCrawler:
                                 if self.last_collected_id:
                                     print(f"[체크포인트] 마지막 상품 ID: {self.last_collected_id}")
                                 self.products_data.clear()
+
+                                # 메모리 관리: 1000개마다 seen_product_ids 정리
+                                if len(self.seen_product_ids) > 1000:
+                                    old_count = len(self.seen_product_ids)
+                                    self.seen_product_ids.clear()
+                                    print(f"[메모리 관리] 세션 ID 캐시 정리: {old_count}개 → 0개")
+
                                 print(f"{'='*60}\n")
                         elif is_dup_flag[0]:
                             # 중복이었으면 카운터 증가
@@ -539,21 +749,25 @@ class ProgressiveCrawler:
                     else:
                         no_new_products_count += 1
 
-                    # 연속 중복 25개 이상 = 더 이상 새 상품 없음 (임계값 조정)
-                    if consecutive_duplicates >= 25:
-                        print(f"\n[완료] 연속 중복 {consecutive_duplicates}개, 더 이상 새 상품 없음")
-                        break
+                    # 무한 크롤링 모드: 자동 종료 없음, 스크롤 계속
+                    # 중복이 많아도 절대 멈추지 않음 (사용자가 "중지" 버튼 누를 때까지)
 
-                    # 스크롤 전략: 중복 많으면 큰 스크롤 (임계값 조정)
-                    if consecutive_duplicates >= 7:
-                        # 중복이 많으면 더 크게 스크롤 (1200px)
-                        await page.evaluate('window.scrollBy(0, 1200)')
+                    # 스크롤 전략: 새 상품 로드를 위한 충분한 스크롤
+                    if consecutive_duplicates >= 30:
+                        # 중복이 매우 많으면 대폭 스크롤 (3000px + 추가 1500px)
+                        print(f"\n[스크롤] 연속 중복 {consecutive_duplicates}개, 큰 폭으로 스크롤...")
+                        await page.evaluate('window.scrollBy(0, 3000)')
+                        await asyncio.sleep(random.uniform(3.5, 5.0))  # 긴 대기
+
+                        # 추가 스크롤로 무한 스크롤 트리거
+                        await page.evaluate('window.scrollBy(0, 1500)')
                         await asyncio.sleep(random.uniform(2.5, 3.5))
+                        scroll_count += 2
                     else:
-                        # 기본 스크롤 (600px)
-                        await page.evaluate('window.scrollBy(0, 600)')
-                        await asyncio.sleep(random.uniform(1.5, 2.5))
-                    scroll_count += 1
+                        # 기본: 중간 스크롤 (1200px)
+                        await page.evaluate('window.scrollBy(0, 1200)')
+                        await asyncio.sleep(random.uniform(2.0, 3.0))
+                        scroll_count += 1
 
                 print(f"\n{'='*60}")
                 print(f"[완료] 총 {collected_count}개 상품 수집")
