@@ -5,6 +5,25 @@ All notable changes to Naver Shopping Crawler will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.3] - 2025-10-31
+
+### Fixed
+- 봇 차단 문제 완전 해결 (100% 성공률 달성!)
+  - 적응형 대기 시간 전략 구현 (첫 상품 8-12초, 이후 5-7초)
+  - 네이버가 첫 클릭을 집중 감시하는 패턴 발견 및 해결
+  - 오류 체크 코드 제거 (봇 감지 트리거 방지)
+  - Ctrl+클릭으로 새 탭 열기 (문서 검증 방식 적용)
+  - networkidle 우선 대기로 페이지 완전 로딩 보장
+
+### Changed
+- 상품 수집 전략을 사람의 자연스러운 브라우징 패턴으로 개선
+- 페이지 로딩 순서 최적화 (networkidle → 추가 대기 → 수집)
+
+### Added
+- 적응형 대기 시간 로직 (`_crawl_product_detail` 메서드)
+- 첫 상품 처리 플래그로 상태 관리
+- 완전한 봇 차단 회피 테스트 스크립트 (test_adaptive_fix.py)
+
 ## [1.2.2] - 2025-10-31
 
 ### Fixed

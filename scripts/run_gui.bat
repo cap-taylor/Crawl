@@ -16,8 +16,8 @@ if not exist .env (
     exit /b 1
 )
 
-REM Run the GUI
-python product_collector_gui.py
+REM Run the GUI (Multi-Task Version - Latest)
+python product_collector_multi_gui.py
 
 REM Keep window open if there was an error
 if %errorlevel% neq 0 (

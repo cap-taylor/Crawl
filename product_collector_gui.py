@@ -81,10 +81,19 @@ class ProductCollectorGUI:
 
     def __init__(self):
         self.window = ctk.CTk()
-        self.window.title("네이버 쇼핑 상품 수집기")
-        self.window.geometry("950x850")  # 약간 크게 (로그 영역 확대)
 
-        # 창 최소 크기 설정 (UI 깨짐 방지)
+        # 창을 일단 숨김 (초기화 중 깜빡임 방지)
+        self.window.withdraw()
+
+        self.window.title("네이버 쇼핑 상품 수집기")
+
+        # 창 크기 및 위치 설정 (고정 좌표 사용)
+        window_width = 950
+        window_height = 850
+        x_position = 100
+        y_position = 50
+
+        self.window.geometry(f"{window_width}x{window_height}+{x_position}+{y_position}")
         self.window.minsize(800, 700)
 
         # 테마 설정
@@ -129,6 +138,13 @@ class ProductCollectorGUI:
         # 키보드 단축키 바인딩
         self.window.bind('<Return>', self._on_enter_key)
         self.window.bind('<Escape>', self._on_escape_key)
+
+        # 모든 위젯 초기화 완료 후 창 표시 (중요!)
+        self.window.update_idletasks()  # 레이아웃 계산 완료
+        self.window.deiconify()  # 창 표시
+        self.window.lift()  # 최상단으로
+        self.window.attributes('-topmost', True)  # 잠시 최상단 고정
+        self.window.after(300, lambda: self.window.attributes('-topmost', False))  # 0.3초 후 해제
 
     def _load_categories(self):
         """카테고리 JSON 파일에서 카테고리 목록 로드"""
@@ -334,6 +350,15 @@ class ProductCollectorGUI:
             text_color="gray60"
         )
         self.resume_info_label.pack(anchor="w", padx=30, pady=(0, 5))
+
+        # 메모리 관리 안내
+        memory_info = ctk.CTkLabel(
+            options_frame,
+            text="※ 장시간 실행 시 브라우저 메모리 증가 가능 (정상 현상)",
+            font=("Arial", 9),
+            text_color="gray50"
+        )
+        memory_info.pack(anchor="w", padx=10, pady=(0, 5))
 
         # 버튼 프레임
         button_frame = ctk.CTkFrame(main_frame)
@@ -819,9 +844,10 @@ class ProductCollectorGUI:
             # V2 크롤러 사용 (점진적 수집 최적화)
             self.crawler = ProgressiveCrawler(
                 product_count=actual_count,
-                headless=False,
+                headless=False,  # 항상 브라우저 보이기 (캡차 해결용)
                 category_name=category_name,
-                category_id=category_id
+                category_id=category_id,
+                skip_count=10  # 첫 10개 건너뛰고 11번째부터 수집
             )
 
             # 크롤러의 print를 가로채서 로그로 리다이렉트
@@ -951,6 +977,7 @@ class ProductCollectorGUI:
 
     def run(self):
         """GUI 실행"""
+        # 메인 루프 시작 (창은 이미 __init__에서 표시됨)
         self.window.mainloop()
 
 

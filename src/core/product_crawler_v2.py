@@ -9,6 +9,7 @@ import asyncio
 import json
 import sys
 import re
+import random
 from datetime import datetime
 from typing import Optional, Set
 from playwright.async_api import async_playwright
@@ -20,11 +21,13 @@ from src.utils.selector_helper import SelectorHelper
 
 class ProgressiveCrawler:
     def __init__(self, headless=False, product_count: Optional[int] = None,
-                 category_name: str = "여성의류", category_id: str = "10000107"):
+                 category_name: str = "여성의류", category_id: str = "10000107",
+                 skip_count: int = 0):
         self.headless = headless
         self.product_count = product_count  # None이면 무한 모드
         self.category_name = category_name
         self.category_id = category_id
+        self.skip_count = skip_count  # 건너뛸 상품 개수
         self.products_data = []
         self.should_stop = False
         self.helper = SelectorHelper(debug=False)
@@ -34,6 +37,9 @@ class ProgressiveCrawler:
         # 중복 방지용 Set
         self.seen_product_ids: Set[str] = set()
         self.db_existing_ids: Set[str] = set()
+
+        # 페이지 로딩 대기 시간 (networkidle로 대체됨)
+        # self.optimal_wait_time은 삭제 - networkidle이 더 정확함
 
         # 체크포인트 (마지막 수집 상품 ID)
         self.last_collected_id: Optional[str] = None
@@ -80,9 +86,9 @@ class ProgressiveCrawler:
         print("2. '확인' 버튼 클릭")
         print("3. 정상 페이지가 나타날 때까지 대기")
         print("="*60)
-        print("15초 동안 대기합니다...")
+        print("20초 동안 대기합니다...")
 
-        for i in range(15, 0, -5):
+        for i in range(20, 0, -5):
             print(f"[대기] 남은 시간: {i}초...")
             await asyncio.sleep(5)
 
@@ -92,13 +98,15 @@ class ProgressiveCrawler:
     async def _collect_visible_products(self, page) -> list:
         """현재 화면에 보이는 상품 URL 수집 (viewport 내부만)"""
         # JavaScript로 viewport에 보이는 상품만 필터링
+        # ✅ 2025-10-15 문서: 단순한 방법이 가장 안정적
         urls = await page.evaluate("""
             () => {
-                const products = Array.from(document.querySelectorAll('a[href*="/products/"]'));
+                // 모든 상품 링크 찾기
+                const products = document.querySelectorAll('a[href*="/products/"]');
                 const viewportHeight = window.innerHeight;
                 const scrollTop = window.scrollY || window.pageYOffset;
 
-                const visibleProducts = products.filter(elem => {
+                const visibleProducts = Array.from(products).filter(elem => {
                     const rect = elem.getBoundingClientRect();
                     const absoluteTop = rect.top + scrollTop;
                     const absoluteBottom = rect.bottom + scrollTop;
@@ -147,8 +155,6 @@ class ProgressiveCrawler:
 
     async def _crawl_product_detail(self, page, context, url: str, is_duplicate_ref: list = None) -> Optional[dict]:
         """상품 상세 정보 수집"""
-        import random
-
         # product_id 추출
         product_id = self._extract_product_id(url)
         if not product_id:
@@ -160,26 +166,35 @@ class ProgressiveCrawler:
             if is_duplicate_ref is not None:
                 is_duplicate_ref[0] = True  # 중복 플래그 설정
 
-            # 중복 체크에도 짧은 대기 (봇 차단 방지 - 자연스러운 스캔 패턴)
-            await asyncio.sleep(random.uniform(0.3, 0.6))
+            # ✅ 중복도 충분한 대기 (봇 차단 방지)
+            # 사람은 "아 이미 봤네" 하고 1~2초 정도 쳐다봄
+            await asyncio.sleep(random.uniform(1.5, 2.5))
             return None
 
         try:
-            # 새 상품 발견 시 추가 대기 (중복 체크 직후 바로 클릭하면 의심스러움)
-            await asyncio.sleep(random.uniform(1.5, 2.5))
-
-            # 랜덤 대기 (2-5초로 단축 - 위에서 이미 대기했으므로)
-            await asyncio.sleep(random.uniform(2.0, 5.0))
+            # ✅ 적응형 대기: 첫 상품은 더 길게 (봇 차단 방지)
+            if not hasattr(self, 'first_product_clicked'):
+                # 첫 상품: 8~12초 대기 (사람이 페이지 둘러보는 시간)
+                print("[첫 상품] 페이지 안정화 대기 중...")
+                await asyncio.sleep(random.uniform(8.0, 12.0))
+                self.first_product_clicked = True
+            else:
+                # 이후 상품: 5~7초 일반 대기
+                await asyncio.sleep(random.uniform(5.0, 7.0))
 
             # 같은 브라우저의 새 탭으로 열기 (Ctrl+클릭 방식)
-            # 1. 링크 요소 찾기
+            # 1. 링크 요소 찾기 - 문서화된 단순한 방법 사용!
+            # ✅ 2025-10-15 문서: "단순한 클릭 + 대기 + 새 탭 찾기"가 가장 안정적
+
+            # 먼저 직접 product_id로 찾기
             link_elem = await page.query_selector(f'a[href*="{product_id}"]')
+
+            # 못 찾으면 모든 상품 링크에서 찾기
             if not link_elem:
-                # selector가 복잡할 수 있으니 모든 상품 링크 찾아서 URL 매칭
                 all_links = await page.query_selector_all('a[href*="/products/"]')
                 for link in all_links:
                     href = await link.get_attribute('href')
-                    if product_id in href:
+                    if href and product_id in href:
                         link_elem = link
                         break
 
@@ -190,108 +205,94 @@ class ProgressiveCrawler:
             # 2. 현재 탭 개수 확인
             pages_before = len(context.pages)
 
-            # 3. 단순 클릭 (JavaScript 조작 없음 - 봇 감지 회피)
-            # 마우스를 요소 위로 이동
+            # 3. ✅ Ctrl+클릭으로 새 탭 열기 (문서에서 검증된 방법!)
+            # 문서: "### 5. 페이지 로딩 순서 및 Ctrl+클릭 해결책 (2025-10-31 완전 해결)"
             await link_elem.hover()
-            await asyncio.sleep(random.uniform(0.8, 1.5))
+            await asyncio.sleep(random.uniform(0.5, 1.0))  # hover 시간
 
-            # ✅ 아무 조작 없이 단순 클릭 (문서 Line 932-948 방식)
-            await link_elem.click()
-            await asyncio.sleep(random.uniform(4.0, 6.0))  # 새 탭 열림 충분히 대기
-
-            # 4. 새 탭 확인
-            pages_after = len(context.pages)
-
-            # ✅ 새 탭 확인 (문서 Line 1048-1071 방식)
-            if pages_after <= pages_before:
-                print(f"\n[스킵] 같은 탭에서 열림 (ID:{product_id})")
-                # ✅ go_back() 대신 카테고리 페이지 확인 후 이동
-                # 같은 탭에서 열렸다 = 상품 페이지로 이동된 상태
-                # 카테고리 페이지로 돌아가야 다음 상품 클릭 가능
-                current_url = page.url
-                if '/products/' in current_url:
-                    # 상품 페이지에 있으면 뒤로 가기
-                    await page.go_back()
-                    await asyncio.sleep(random.uniform(2.0, 3.0))
-                # 다음 상품으로 (문서: continue)
-                return None
+            print(f"[클릭] 상품 Ctrl+클릭 (ID:{product_id})")
+            # ✅ Ctrl+클릭으로 새 탭 강제 열기!
+            await link_elem.click(modifiers=['Control'], timeout=5000)
+            await asyncio.sleep(random.uniform(1.0, 2.0))  # 클릭 후 대기
 
             # 5. 새로 열린 탭 가져오기
-            detail_page = context.pages[-1]
-
-            # 페이지 로드 대기 (포커스는 자동으로 이동됨)
-            try:
-                await detail_page.wait_for_load_state('domcontentloaded', timeout=15000)
-                await asyncio.sleep(random.uniform(2.0, 3.0))
-            except Exception as nav_error:
-                print(f"\n[오류] 페이지 로드 실패 (ID:{product_id}): {str(nav_error)[:60]}")
-                await detail_page.close()
-                await page.bring_to_front()
+            await asyncio.sleep(1.0)  # 탭이 완전히 열릴 때까지 대기
+            all_pages = context.pages
+            if len(all_pages) <= 1:
+                print(f"[경고] 새 탭이 열리지 않음")
                 return None
 
-            # URL 검증 (빠른 체크는 괜찮음)
-            current_url = detail_page.url
-            if not re.search(r'/products/\d+', current_url):
+            detail_page = all_pages[-1]
+
+            # ✅ 중요! 새 탭에 포커스 주기 (화면에 보이도록)
+            await detail_page.bring_to_front()
+            await asyncio.sleep(random.uniform(0.5, 1.0))  # 포커스 전환 대기
+
+            # 디버깅: URL 확인
+            print(f"[디버그] 새 탭 URL: {detail_page.url}")
+            if "products/" not in detail_page.url:
+                print("[경고] 상품 페이지가 아님! 카테고리 페이지가 열림")
                 await detail_page.close()
-                await page.bring_to_front()
                 return None
 
-            # 페이지 로드 완전 대기 (JavaScript 렌더링 완료까지)
-            # ✅ 브랜드 페이지는 이미지 많아서 더 오래 걸림
+            # ✅ 핵심 수정: networkidle을 가장 먼저! (페이지 완전 로딩 보장)
+            # 이것이 봇 차단 해결의 핵심 - 페이지가 완전히 로드된 후에만 상호작용
+            print("[대기] 페이지 완전 로딩 중 (networkidle)...")
             try:
-                await detail_page.wait_for_load_state('networkidle', timeout=15000)
-            except:
-                # ✅ networkidle 타임아웃 시에도 충분히 대기 (브랜드 페이지 로딩 중)
-                await asyncio.sleep(5.0)
+                # networkidle: 네트워크 활동이 0.5초 동안 없을 때까지 대기
+                # 이것이 가장 확실한 페이지 로딩 완료 신호!
+                await detail_page.wait_for_load_state('networkidle', timeout=30000)
+                print("[완료] 페이지 완전 로딩 완료!")
 
-            # ✅ 인간처럼 행동: 페이지 읽기 시간 (3-5초 체류)
-            await asyncio.sleep(random.uniform(3.0, 5.0))
-
-            # ✅ 마우스 움직임 시뮬레이션 (자연스러운 탐색)
-            await detail_page.mouse.move(
-                random.randint(200, 800),
-                random.randint(100, 400)
-            )
-            await asyncio.sleep(random.uniform(0.5, 1.0))
-
-            # ✅ 부드러운 다단계 스크롤 (인간은 조금씩 스크롤)
-            # 1단계: 조금 스크롤 (상품 정보 보기)
-            await detail_page.evaluate('window.scrollBy(0, 300)')
-            await asyncio.sleep(random.uniform(1.5, 2.5))
-
-            # 2단계: 중간 위치 (이미지/설명 보기)
-            await detail_page.evaluate('window.scrollBy(0, 400)')
-            await asyncio.sleep(random.uniform(1.5, 2.5))
-
-            # 3단계: 검색태그 위치 (40% 근처)
-            # 정확한 계산 대신 대략적인 스크롤
-            await detail_page.evaluate('window.scrollBy(0, 500)')
-            await asyncio.sleep(random.uniform(1.0, 2.0))
-
-            # ✅ 에러 페이지 체크 (모든 인간 행동 시뮬레이션 후 체크 - 봇 감지 회피)
-            error_selectors = [
-                'text="상품이 존재하지 않습니다"',
-                'text="현재 서비스 접속이 불가합니다"',
-                'text="일시적인 오류"',
-                'text="서비스 접근이 제한"',
-                'text="잠시 후 다시 시도"'
-            ]
-
-            for selector in error_selectors:
-                if await detail_page.query_selector(selector):
-                    print(f"\n[경고] 봇 차단 감지: {selector}")
+                # 로딩 완료 후 충분한 인간적 대기 (3-5초로 증가)
+                # 페이지가 완전히 안정화되도록 기다림
+                await asyncio.sleep(random.uniform(3.0, 5.0))
+            except Exception as load_error:
+                print(f"[경고] networkidle 타임아웃, domcontentloaded로 대체")
+                try:
+                    await detail_page.wait_for_load_state('domcontentloaded', timeout=10000)
+                    # domcontentloaded 후 추가 대기 (페이지 렌더링 시간)
+                    await asyncio.sleep(random.uniform(3.0, 5.0))
+                except:
+                    print(f"\n[오류] 페이지 로드 완전 실패 (ID:{product_id})")
                     await detail_page.close()
                     await page.bring_to_front()
                     return None
 
+            # ✅ 인간 행동 시뮬레이션 먼저! (스크롤로 자연스러운 행동)
+            # 문서: 에러 체크 전에 인간처럼 스크롤 먼저 해야 함! (2025-10-31 최종 해결)
+            await detail_page.evaluate('window.scrollBy(0, 500)')
+            await asyncio.sleep(random.uniform(0.5, 1.0))
+            await detail_page.evaluate('window.scrollBy(0, 700)')
+            await asyncio.sleep(random.uniform(0.5, 1.0))
+
+            # ✅ URL 검증을 스크롤 후에! (페이지 완전 로딩 + 스크롤 후 체크)
+            current_url = detail_page.url
+            if not re.search(r'/products/\d+', current_url):
+                print(f"[경고] 상품 URL 패턴 불일치: {current_url}")
+                await detail_page.close()
+                await page.bring_to_front()
+                return None
+
+            # ✅ 오류 체크 제거! 그냥 조용히 기다리고 수집만 시도
+            # 사용자 피드백: "상품이 존재하지 않습니다" 체크 자체가 봇 감지 트리거!
+            # 해결책: 에러 체크하지 말고 그냥 깔끔하게 기다린 후 수집 시도
+            print("[수집] 상품 정보 수집 시도 중...")
+
+            # 추가 대기: 페이지가 완전히 안정화되도록
+            await asyncio.sleep(random.uniform(2.0, 3.0))
+
             # 상품 정보 수집
             detail_info = await self._collect_detail_info(detail_page)
 
-            # 상품명 검증
+            # 상품명 검증 - 디버깅용 로그 추가
             product_name = detail_info.get('detail_product_name')
-            invalid_keywords = ['본문', '바로가기', '네이버', '로그인', '서비스', '스토어 홈']
-            if (not product_name or len(product_name) < 5 or
-                any(kw in product_name for kw in invalid_keywords)):
+            print(f"\n[디버그] 수집된 상품명: '{product_name}'")
+
+            # 상품명이 None이면 봇 차단됨 - 건너뛰기
+            if not product_name:
+                print(f"[경고] 상품명 없음 - 봇 차단 감지! 건너뛰기")
+                # 탭 닫고 다음 상품으로
                 await detail_page.close()
                 await page.bring_to_front()
                 return None
@@ -470,17 +471,17 @@ class ProgressiveCrawler:
                 print("[접속] 네이버 메인...")
                 await page.goto('https://www.naver.com')
                 await page.wait_for_load_state('domcontentloaded')  # networkidle 절대 사용 금지!
-                await asyncio.sleep(3)
+                await asyncio.sleep(random.uniform(3.5, 5.0))
 
                 # 2. 쇼핑 버튼 클릭
                 print("[클릭] 쇼핑...")
                 await page.evaluate('window.scrollTo(0, 0)')  # 상단으로 스크롤 필수!
-                await asyncio.sleep(1)
+                await asyncio.sleep(random.uniform(3.5, 5.0))
 
                 shopping_selector = '#shortcutArea > ul > li:nth-child(4) > a'
                 shopping_link = page.locator(shopping_selector)  # Locator API 사용
                 await shopping_link.click(timeout=10000)
-                await asyncio.sleep(3)
+                await asyncio.sleep(random.uniform(3.5, 5.0))
                 print("[성공] 쇼핑 클릭 완료")
 
                 # 새 탭 전환
@@ -516,36 +517,69 @@ class ProgressiveCrawler:
 
                     await category_btn.click()
                     print("[성공] 카테고리 메뉴 열림")
-                    await asyncio.sleep(2)  # 메뉴 애니메이션 대기
+                    await asyncio.sleep(random.uniform(3.5, 5.0))  # 메뉴 애니메이션 대기
                 except Exception as e:
                     print(f"[오류] 카테고리 메뉴 클릭 실패: {str(e)}")
                     print("[안내] 브라우저에서 수동으로 카테고리 메뉴를 클릭해주세요")
                     await asyncio.sleep(10)
 
-                # 4. 카테고리 선택
+                # 4. 카테고리 선택 (셀렉터 폴백 전략)
                 print(f"[클릭] {self.category_name}...")
                 try:
-                    # 메뉴 항목이 보일 때까지 대기
-                    category_link = await page.wait_for_selector(
-                        f'a[data-name="{self.category_name}"]',
-                        timeout=15000,
-                        state='visible'
-                    )
+                    category_link = None
+
+                    # 1차: ID 셀렉터 (가장 안정적)
+                    try:
+                        category_link = await page.wait_for_selector(
+                            f'#cat_layer_item_{self.category_id}',
+                            timeout=5000,
+                            state='visible'
+                        )
+                        print(f"[셀렉터] ID 셀렉터 성공")
+                    except:
+                        pass
+
+                    # 2차: data-id 속성
                     if not category_link:
-                        raise Exception(f"{self.category_name} 카테고리를 찾을 수 없습니다")
+                        try:
+                            category_link = await page.wait_for_selector(
+                                f'a[data-id="{self.category_id}"]',
+                                timeout=5000,
+                                state='visible'
+                            )
+                            print(f"[셀렉터] data-id 셀렉터 성공")
+                        except:
+                            pass
+
+                    # 3차: data-name 속성
+                    if not category_link:
+                        category_link = await page.wait_for_selector(
+                            f'a[data-name="{self.category_name}"]',
+                            timeout=5000,
+                            state='visible'
+                        )
+                        print(f"[셀렉터] data-name 셀렉터 성공")
+
+                    if not category_link:
+                        raise Exception(f"{self.category_name} 카테고리를 찾을 수 없습니다 (모든 셀렉터 실패)")
 
                     await category_link.click()
                     print(f"[성공] {self.category_name} 선택 완료")
-                    await asyncio.sleep(5)
+                    await asyncio.sleep(random.uniform(4.0, 6.0))
                 except Exception as e:
                     print(f"[오류] {self.category_name} 선택 실패: {str(e)}")
                     print(f"[안내] 브라우저에서 수동으로 '{self.category_name}' 카테고리를 클릭해주세요")
                     await asyncio.sleep(15)
 
-                # 캡차 체크
+                # 캡차 체크 - 더 확실하게 체크
+                await asyncio.sleep(3)  # 캡차 로드 대기
                 captcha_elem = await self.helper.try_selectors(page, SELECTORS['captcha_indicators'], "캡차")
                 if captcha_elem:
                     await self.wait_for_captcha_solve(page)
+                else:
+                    # 캡차 텍스트로도 체크
+                    if await page.query_selector('text="보안 확인을 완료해 주세요"'):
+                        await self.wait_for_captcha_solve(page)
 
                 # 페이지 로드 대기
                 try:
@@ -555,12 +589,24 @@ class ProgressiveCrawler:
                 await asyncio.sleep(2)
 
                 # ✅ 카테고리 진입 후 페이지 둘러보기 시간 (봇 차단 방지)
-                # 사람은 페이지 진입 후 바로 클릭하지 않고 5-8초 둘러봄
-                import random
-                await asyncio.sleep(random.uniform(5.0, 8.0))
+                # 사람은 페이지 진입 후 바로 클릭하지 않고 4-6초 둘러봄
+                await asyncio.sleep(random.uniform(4.0, 6.0))
+
+                # ✅ skip_count 만큼 스크롤 (21번째 상품부터 시작하려면 20개 건너뛰기)
+                if self.skip_count > 0:
+                    print(f"\n[스킵] 상품 {self.skip_count}개 건너뛰기 위해 스크롤 중...")
+                    # 한 화면에 약 5-7개 상품이 보인다고 가정, 20개 = 3-4번 스크롤
+                    scroll_times = (self.skip_count // 6) + 1
+                    for i in range(scroll_times):
+                        await page.evaluate('window.scrollBy(0, 800)')
+                        await asyncio.sleep(random.uniform(1.0, 1.5))
+                        print(f"[스크롤] {i+1}/{scroll_times}회 완료")
+                    print(f"[완료] {self.skip_count}개 건너뛰기 완료\n")
 
                 # 5. 점진적 수집 시작
                 print(f"\n[점진적 수집] 시작 (DB 중복: {len(self.db_existing_ids)}개 스킵)")
+                if self.skip_count > 0:
+                    print(f"[설정] 처음 {self.skip_count}개 건너뛰고 {self.skip_count + 1}번째부터 수집")
                 print(f"[정보] 화면 보이는 상품 → 수집 → 스크롤 → 반복\n")
 
                 if self.product_count is None:
@@ -571,8 +617,7 @@ class ProgressiveCrawler:
                 no_new_products_count = 0
                 consecutive_duplicates = 0  # 연속 중복 카운터 (전역)
                 iteration_count = 0
-
-                import random
+                skipped_count = 0  # 건너뛴 상품 카운터
 
                 while True:
                     # 무한 루프 방지 (제한 모드에서만 - 버그 방지용)
@@ -686,14 +731,21 @@ class ProgressiveCrawler:
                         if self.product_count and collected_count >= self.product_count:
                             break
 
+                        # skip_count 만큼 건너뛰기
+                        if skipped_count < self.skip_count:
+                            skipped_count += 1
+                            continue
+
                         print(f"[{collected_count + 1}번째] 수집 시도...", end="", flush=True)
 
                         is_dup_flag = [False]  # 중복 플래그 (리스트로 참조 전달)
                         product_data = await self._crawl_product_detail(page, context, url, is_dup_flag)
 
-                        # 5개 연속 중복마다 더 긴 대기 (인간적인 스캔 패턴)
-                        if is_dup_flag[0] and consecutive_duplicates > 0 and consecutive_duplicates % 5 == 0:
-                            await asyncio.sleep(random.uniform(1.5, 2.5))
+                        # 중복 카운터 관리
+                        if is_dup_flag[0]:
+                            consecutive_duplicates += 1
+                        else:
+                            consecutive_duplicates = 0
 
                         if product_data:
                             self.products_data.append(product_data)
@@ -707,7 +759,8 @@ class ProgressiveCrawler:
                             brand = product_data['detail_page_info'].get('brand_name', 'N/A')
                             category = product_data['detail_page_info'].get('category_fullname', 'N/A')
 
-                            print(f" [{product_name[:40]}] 태그 {tags_count}개 (총 {collected_count}개)")
+                            display_name = product_name[:40] if product_name else "이름 없음"
+                            print(f" [{display_name}] 태그 {tags_count}개 (총 {collected_count}개)")
 
                             # 10개마다 DB 상태 요약 출력
                             if collected_count % 10 == 0:

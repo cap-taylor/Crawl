@@ -22,9 +22,9 @@ if errorlevel 1 (
 echo [확인] Python 설치됨
 echo.
 
-REM GUI 실행
+REM GUI 실행 (멀티 태스크 버전 - 최신)
 echo [실행] GUI 시작 중...
-python product_collector_gui.py
+python product_collector_multi_gui.py
 
 REM 오류 발생 시 창 유지
 if errorlevel 1 (
