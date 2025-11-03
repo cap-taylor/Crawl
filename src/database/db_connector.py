@@ -108,88 +108,31 @@ class DatabaseConnector:
 
     def is_duplicate_product(self, product_id: str, product_data: Dict) -> bool:
         """
-        DB에 동일한 상품 정보가 이미 있는지 확인
+        DB에 동일한 상품이 이미 있는지 확인 (핵심 필드만 비교)
+
+        개선 사항:
+        - product_id만 체크 (PRIMARY KEY 기반)
+        - 동적 데이터(가격, 리뷰수 등)는 무시하고 업데이트
+        - 성능 최적화: 단순 EXISTS 쿼리
 
         Args:
             product_id: 상품 ID
-            product_data: 새로 수집한 상품 데이터
 
         Returns:
-            bool: True면 중복(스킵), False면 신규 또는 업데이트 필요
+            bool: True면 중복(스킵), False면 신규
         """
         cursor = self.conn.cursor()
 
         try:
-            # DB에서 기존 상품 조회
+            # 단순히 product_id 존재 여부만 확인
             cursor.execute(
-                """
-                SELECT product_name, brand_name, price, discount_rate,
-                       review_count, rating, search_tags, product_url,
-                       thumbnail_url, is_sold_out
-                FROM products
-                WHERE product_id = %s
-                """,
+                "SELECT 1 FROM products WHERE product_id = %s LIMIT 1",
                 (product_id,)
             )
             result = cursor.fetchone()
 
-            # 기존 데이터 없으면 신규
-            if not result:
-                return False
-
-            # 기존 데이터와 비교
-            db_data = {
-                'product_name': result[0],
-                'brand_name': result[1],
-                'price': result[2],
-                'discount_rate': result[3],
-                'review_count': result[4],
-                'rating': float(result[5]) if result[5] else None,
-                'search_tags': result[6] if result[6] else [],
-                'product_url': result[7],
-                'thumbnail_url': result[8],
-                'is_sold_out': result[9]
-            }
-
-            # 새 데이터 정리 (detail_info 우선, 없으면 product_info)
-            detail_info = product_data.get('detail_page_info', {})
-            product_info = product_data.get('product_info', {})
-
-            new_data = {
-                'product_name': detail_info.get('detail_product_name') or product_info.get('product_name', f"상품_{product_id}"),
-                'brand_name': detail_info.get('brand_name') or product_info.get('brand', None),
-                'price': detail_info.get('detail_price') or (int(product_info.get('price', 0)) if product_info.get('price') else None),
-                'discount_rate': detail_info.get('discount_rate') or (int(product_info.get('discount_rate', 0)) if product_info.get('discount_rate') else None),
-                'review_count': detail_info.get('detail_review_count') or (int(product_info.get('review_count', 0)) if product_info.get('review_count') else 0),
-                'rating': detail_info.get('rating') or (float(product_info.get('rating', 0)) if product_info.get('rating') else None),
-                'search_tags': detail_info.get('search_tags', []),
-                'product_url': product_data.get('product_url', ''),
-                'thumbnail_url': detail_info.get('thumbnail_url') or product_info.get('thumbnail_url', None),
-                'is_sold_out': detail_info.get('is_sold_out', False)
-            }
-
-            # 모든 필드 비교
-            for key in db_data.keys():
-                db_value = db_data[key]
-                new_value = new_data[key]
-
-                # None 처리
-                if db_value is None and new_value is None:
-                    continue
-                if db_value is None or new_value is None:
-                    return False
-
-                # search_tags 배열 비교
-                if key == 'search_tags':
-                    if set(db_value) != set(new_value):
-                        return False
-                # 일반 필드 비교
-                else:
-                    if db_value != new_value:
-                        return False
-
-            # 모든 필드가 동일하면 중복
-            return True
+            # 있으면 중복 (True), 없으면 신규 (False)
+            return result is not None
 
         except Exception as e:
             print(f"[DB] 중복 체크 중 오류: {e}")

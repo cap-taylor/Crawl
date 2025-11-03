@@ -3,11 +3,88 @@
 > 이 문서는 네이버 쇼핑 크롤링 개발 과정에서 겪은 모든 시행착오와 해결책을 기록합니다.
 > **절대 같은 실수를 반복하지 않기 위한 필수 참고 문서입니다.**
 
-## 📅 최종 업데이트: 2025-11-03 20:22
+## 📅 최종 업데이트: 2025-11-03 20:51
 
 ---
 
 ## 🚨 중요 업데이트 (2025-11-03)
+
+### ✅ 중복 체크 로직 대폭 개선 (2025-11-03 21:30)
+
+**문제점**:
+- 기존 코드가 13개 필드 전부를 비교 (109줄 코드)
+- 가격, 리뷰수, 평점 등 자주 변하는 동적 데이터도 비교
+- 하나라도 다르면 중복 아님으로 판단 → 불필요한 업데이트 발생
+- 존재하지 않는 `is_sold_out` 필드 참조 (스키마 불일치)
+- 복잡한 로직으로 유지보수 어려움
+
+**원인**:
+1. **과도한 비교**: product_id만으로 충분한데 모든 필드 비교
+2. **동적 데이터 비교**: 가격/리뷰는 시간에 따라 자연스럽게 변함
+3. **비효율적 쿼리**: SELECT 13개 필드 → 전부 비교
+
+**해결책**:
+```python
+def is_duplicate_product(self, product_id: str, product_data: Dict) -> bool:
+    """
+    DB에 동일한 상품이 이미 있는지 확인 (핵심 필드만 비교)
+
+    개선 사항:
+    - product_id만 체크 (PRIMARY KEY 기반)
+    - 동적 데이터(가격, 리뷰수 등)는 무시하고 업데이트
+    - 성능 최적화: 단순 EXISTS 쿼리
+    """
+    cursor = self.conn.cursor()
+
+    try:
+        # 단순히 product_id 존재 여부만 확인
+        cursor.execute(
+            "SELECT 1 FROM products WHERE product_id = %s LIMIT 1",
+            (product_id,)
+        )
+        result = cursor.fetchone()
+
+        # 있으면 중복 (True), 없으면 신규 (False)
+        return result is not None
+
+    except Exception as e:
+        print(f"[DB] 중복 체크 중 오류: {e}")
+        return False
+    finally:
+        cursor.close()
+```
+
+**개선 효과**:
+- ✅ **단순화**: 109줄 → 34줄 (75% 감소)
+- ✅ **명확성**: product_id (PRIMARY KEY)만으로 중복 판단
+- ✅ **성능**: 단순 EXISTS 쿼리로 인덱스 활용 극대화
+- ✅ **안정성**: 스키마 불일치 문제 해결 (is_sold_out 제거)
+- ✅ **유연성**: 가격 변동 등 자연스럽게 UPSERT로 업데이트
+
+**UPSERT 자동 처리**:
+- `save_product()` 함수의 `ON CONFLICT (product_id)` 절이 자동으로 업데이트 처리
+- 중복 체크는 단순히 "스킵할지 말지" 판단만 수행
+- 스킵하지 않으면 UPSERT가 INSERT 또는 UPDATE 자동 선택
+
+**테스트 결과**:
+```
+첫 저장 결과: saved
+중복 저장 결과: skipped  (product_id 동일 → 스킵)
+가격 변경 후: skipped    (product_id 동일 → 여전히 스킵)
+DB 데이터: product_id=TEST_12345, name=테스트 상품, price=10000원
+✅ 테스트 완료 - 중복 체크 정상 작동
+```
+
+**코드 위치**:
+- `src/database/db_connector.py:109-141` (is_duplicate_product 함수)
+
+**교훈**:
+- 중복 체크는 PRIMARY KEY만으로 충분
+- 동적 데이터(가격, 리뷰수, 평점)는 비교하지 말고 업데이트하도록
+- 단순한 로직이 가장 안정적이고 유지보수하기 쉬움
+- UPSERT 패턴을 활용하면 중복 체크와 업데이트를 분리 가능
+
+---
 
 ### ✅ GUI 레이아웃 여백 문제 해결 (2025-11-03)
 

@@ -483,7 +483,7 @@ class ProductCollectorGUI:
         header_widths = [30, 280, 90, 80, 50, 50]
 
         header_row = ctk.CTkFrame(table_scroll_frame, fg_color=self.colors['bg_input'], corner_radius=0)
-        header_row.pack(fill="x", pady=(0, 2))
+        header_row.pack(fill="x", pady=0)
 
         for i, (header, width) in enumerate(zip(headers, header_widths)):
             ctk.CTkLabel(
@@ -580,7 +580,7 @@ class ProductCollectorGUI:
         self._add_single_row_at_top(product_data)
 
     def _add_single_row_at_top(self, product: dict):
-        """테이블 맨 위에 새 행 1개만 추가 (깜빡임 방지)"""
+        """테이블 맨 위에 새 행 1개만 추가 (아코디언 방식)"""
         # 상태에 따른 색상
         status = product.get('_db_status', 'unknown')
         if status == 'saved':
@@ -593,17 +593,24 @@ class ProductCollectorGUI:
             status_text = "ERR"
             status_color = self.colors['accent_red']
 
-        # 행 프레임 (맨 위에 삽입, 첫 번째는 밝은 배경)
-        row_frame = ctk.CTkFrame(self.table_body, fg_color=self.colors['bg_input'], corner_radius=0)
-        row_frame.pack(fill="x", pady=1, after=self.table_body.winfo_children()[0])  # 헤더 다음에 삽입
+        # 컨테이너 프레임 (행 + 상세 정보)
+        container_frame = ctk.CTkFrame(self.table_body, fg_color="transparent", corner_radius=0)
+        container_frame.pack(fill="x", pady=1, after=self.table_body.winfo_children()[0])
+
+        # 행 프레임 (클릭 가능)
+        row_frame = ctk.CTkFrame(container_frame, fg_color=self.colors['bg_input'], corner_radius=0)
+        row_frame.pack(fill="x")
+
+        # 인덱스 계산
+        row_index = len(self.recent_products)
 
         # 컬럼 데이터
-        product_name = product.get('product_name', 'N/A')[:30]
+        product_name = (product.get('product_name') or 'N/A')[:30]
         price = f"{product.get('price', 0):,}원" if product.get('price') else "N/A"
-        brand = product.get('brand_name', 'N/A')[:10]
+        brand = (product.get('brand_name') or 'N/A')[:10]
         tag_count = f"{len(product.get('search_tags', []))}개"
 
-        row_data = ["1", product_name, price, brand, tag_count, status_text]
+        row_data = [str(row_index), product_name, price, brand, tag_count, status_text]
         row_widths = [30, 280, 90, 80, 50, 50]
         row_colors = [self.colors['text_secondary'], self.colors['text_primary'],
                      self.colors['text_primary'], self.colors['text_secondary'],
@@ -618,6 +625,74 @@ class ProductCollectorGUI:
                 width=width,
                 anchor="w" if j > 0 else "center"
             ).pack(side="left", padx=(8 if j == 0 else 4))
+
+        # 상세 정보 프레임 (초기에는 숨김)
+        detail_frame = ctk.CTkFrame(container_frame, fg_color=self.colors['bg_dark'], corner_radius=4)
+        detail_frame.pack_forget()  # 초기 숨김
+
+        # 상세 정보 내용
+        detail_text = self._create_product_detail_text(product)
+        detail_label = ctk.CTkLabel(
+            detail_frame,
+            text=detail_text,
+            font=("Arial", 9),
+            text_color=self.colors['text_secondary'],
+            justify="left",
+            anchor="w"
+        )
+        detail_label.pack(fill="both", padx=15, pady=8)
+
+        # 토글 상태 저장
+        is_expanded = [False]
+
+        # 클릭 이벤트 (아코디언 토글)
+        def toggle_detail(event=None):
+            if is_expanded[0]:
+                detail_frame.pack_forget()
+                is_expanded[0] = False
+            else:
+                detail_frame.pack(fill="x", pady=(0, 2))
+                is_expanded[0] = True
+
+        # 행 전체를 클릭 가능하게
+        row_frame.bind("<Button-1>", toggle_detail)
+        for child in row_frame.winfo_children():
+            child.bind("<Button-1>", toggle_detail)
+
+    def _create_product_detail_text(self, product: dict) -> str:
+        """상품 상세 정보 텍스트 생성"""
+        lines = []
+
+        # 1순위 정보
+        lines.append(f"상품명: {product.get('product_name') or 'N/A'}")
+        lines.append(f"카테고리: {product.get('category_name') or 'N/A'}")
+
+        # 2순위 정보
+        price = product.get('price')
+        lines.append(f"가격: {price:,}원" if price else "가격: N/A")
+        lines.append(f"평점: {product.get('rating') or 'N/A'} / 5.0")
+        lines.append(f"상품 URL: {product.get('product_url') or 'N/A'}")
+
+        # 3순위 정보
+        lines.append(f"브랜드: {product.get('brand_name') or 'N/A'}")
+        discount = product.get('discount_rate')
+        lines.append(f"할인율: {discount}%" if discount else "할인율: 없음")
+        lines.append(f"리뷰 수: {product.get('review_count') or 0}개")
+
+        # 검색 태그
+        tags = product.get('search_tags', [])
+        if tags:
+            tags_str = ", ".join(tags[:10])  # 최대 10개
+            lines.append(f"검색 태그 ({len(tags)}개): {tags_str}")
+        else:
+            lines.append("검색 태그: 없음")
+
+        # 수집 시간
+        crawled_at = product.get('crawled_at')
+        if crawled_at:
+            lines.append(f"수집 시간: {crawled_at}")
+
+        return "\n".join(lines)
 
     def _refresh_product_table(self):
         """상품 테이블 다시 그리기 (전체 재생성)"""
