@@ -185,6 +185,23 @@ class SimpleCrawler:
                                 continue
 
                             product = fresh_links[idx]
+
+                            # 🚀 최적화: 클릭 전 중복 체크
+                            if self.save_to_db and self.db and self.db_connected:
+                                try:
+                                    # URL에서 product_id 추출
+                                    product_url = await product.get_attribute('href')
+                                    if product_url:
+                                        product_id = self.db.extract_product_id(product_url)
+
+                                        # DB 중복 체크
+                                        if self.db.is_duplicate_product(product_id, {}):
+                                            self.skipped_count += 1
+                                            print(f"[{idx+1}번] 이미 DB에 존재 - SKIP (ID: {product_id[:20]}...)")
+                                            continue
+                                except Exception as e:
+                                    print(f"[{idx+1}번] 중복 체크 오류: {str(e)[:30]} - 수집 진행")
+
                             await product.click()
                             await asyncio.sleep(3)  # 2초 → 3초 (탭 열림 대기)
 

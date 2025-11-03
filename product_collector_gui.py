@@ -5,6 +5,7 @@ SimpleCrawler 기반 - 13개 필드 수집 + DB 직접 저장 + 무한 모드
 """
 
 import customtkinter as ctk
+import tkinter as tk
 import asyncio
 import threading
 import queue
@@ -616,36 +617,14 @@ class ProductCollectorGUI:
                      self.colors['text_primary'], self.colors['text_secondary'],
                      self.colors['text_secondary'], status_color]
 
-        for j, (data, width, color) in enumerate(zip(row_data, row_widths, row_colors)):
-            ctk.CTkLabel(
-                row_frame,
-                text=data,
-                font=("Arial", 9),
-                text_color=color,
-                width=width,
-                anchor="w" if j > 0 else "center"
-            ).pack(side="left", padx=(8 if j == 0 else 4))
-
-        # 상세 정보 프레임 (초기에는 숨김)
+        # 상세 정보 프레임 (초기에는 숨김) - 먼저 생성
         detail_frame = ctk.CTkFrame(container_frame, fg_color=self.colors['bg_dark'], corner_radius=4)
         detail_frame.pack_forget()  # 초기 숨김
-
-        # 상세 정보 내용
-        detail_text = self._create_product_detail_text(product)
-        detail_label = ctk.CTkLabel(
-            detail_frame,
-            text=detail_text,
-            font=("Arial", 9),
-            text_color=self.colors['text_secondary'],
-            justify="left",
-            anchor="w"
-        )
-        detail_label.pack(fill="both", padx=15, pady=8)
 
         # 토글 상태 저장
         is_expanded = [False]
 
-        # 클릭 이벤트 (아코디언 토글)
+        # 클릭 이벤트 (아코디언 토글) - for 루프 전에 정의
         def toggle_detail(event=None):
             if is_expanded[0]:
                 detail_frame.pack_forget()
@@ -654,10 +633,51 @@ class ProductCollectorGUI:
                 detail_frame.pack(fill="x", pady=(0, 2))
                 is_expanded[0] = True
 
-        # 행 전체를 클릭 가능하게
+        # 행 데이터 레이블 생성
+        for j, (data, width, color) in enumerate(zip(row_data, row_widths, row_colors)):
+            # CTkLabel로 복원 (깔끔한 UI)
+            label = ctk.CTkLabel(
+                row_frame,
+                text=data,
+                font=("Arial", 9),
+                text_color=color,
+                width=width,
+                anchor="w" if j > 0 else "center"
+            )
+            label.pack(side="left", padx=(8 if j == 0 else 4))
+
+            # 우클릭 메뉴 바인딩
+            label.bind("<Button-3>", lambda e, d=data: self._show_copy_menu(e, d))
+            label.bind("<Button-1>", toggle_detail)  # 이제 정의됨
+
+        # 상세 정보 내용 (CTkLabel + 우클릭 메뉴)
+        detail_text = self._create_product_detail_text(product)
+        detail_label = ctk.CTkLabel(
+            detail_frame,
+            text=detail_text,
+            font=("Arial", 9),
+            text_color=self.colors['text_secondary'],
+            justify="left",
+            anchor="nw"
+        )
+        detail_label.pack(fill="both", padx=15, pady=8)
+
+        # 상세 정보 우클릭 메뉴
+        detail_label.bind("<Button-3>", lambda e: self._show_copy_menu(e, detail_text, is_multiline=True))
+
+        # 행 프레임 클릭 이벤트
         row_frame.bind("<Button-1>", toggle_detail)
-        for child in row_frame.winfo_children():
-            child.bind("<Button-1>", toggle_detail)
+        row_frame.bind("<Button-3>", lambda e: self._show_copy_menu(e, self._create_product_summary(product), is_multiline=True))
+
+    def _create_product_summary(self, product: dict) -> str:
+        """상품 요약 정보 생성 (행 전체 복사용)"""
+        product_name = product.get('product_name') or 'N/A'
+        price = f"{product.get('price', 0):,}원" if product.get('price') else "N/A"
+        brand = product.get('brand_name') or 'N/A'
+        tag_count = len(product.get('search_tags', []))
+        status = product.get('_db_status', 'unknown')
+
+        return f"상품명: {product_name}\n가격: {price}\n브랜드: {brand}\n태그: {tag_count}개\nDB 상태: {status}"
 
     def _create_product_detail_text(self, product: dict) -> str:
         """상품 상세 정보 텍스트 생성"""
@@ -693,6 +713,37 @@ class ProductCollectorGUI:
             lines.append(f"수집 시간: {crawled_at}")
 
         return "\n".join(lines)
+
+    def _show_copy_menu(self, event, text: str, is_multiline: bool = False):
+        """우클릭 메뉴 표시 (복사 기능)"""
+        menu = tk.Menu(self.root, tearoff=0)
+
+        # 복사 함수 (메뉴 자동 닫기 포함)
+        def copy_and_close():
+            self._copy_to_clipboard(text)
+            menu.unpost()  # 메뉴 닫기
+            menu.destroy()  # 메뉴 파괴
+
+        if is_multiline:
+            menu.add_command(label="전체 복사", command=copy_and_close)
+        else:
+            menu.add_command(label="복사", command=copy_and_close)
+
+        # 메뉴 표시 (포커스 강탈 없이)
+        menu.tk_popup(event.x_root, event.y_root)
+
+        # 메뉴 외부 클릭 시 자동 닫기
+        menu.bind("<FocusOut>", lambda e: menu.unpost())
+
+    def _copy_to_clipboard(self, text: str):
+        """클립보드에 텍스트 복사"""
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(text)
+            self.root.update()  # 클립보드 업데이트
+            print(f"[복사] 클립보드에 복사됨 ({len(text)}자)")
+        except Exception as e:
+            print(f"[복사 오류] {str(e)}")
 
     def _refresh_product_table(self):
         """상품 테이블 다시 그리기 (전체 재생성)"""
