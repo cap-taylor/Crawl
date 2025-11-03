@@ -109,33 +109,35 @@ CREATE TABLE categories (
 );
 ```
 
-#### 2. Products 테이블
-상품 상세 정보 및 검색 태그 저장
+#### 2. Products 테이블 (v1.1.0)
+상품 상세 정보 및 검색 태그 저장 (13개 필드)
 ```sql
 CREATE TABLE products (
-    product_id VARCHAR(255) PRIMARY KEY,       -- 상품 고유 ID
-    category_name VARCHAR(100),                -- 카테고리명 (categories 참조, FK 없음)
-    product_name TEXT NOT NULL,                -- 상품명
-    brand_name VARCHAR(100),                   -- 브랜드명
-    price INTEGER,                             -- 가격 (원)
-    discount_rate INTEGER,                     -- 할인율 (%)
-    review_count INTEGER DEFAULT 0,            -- 리뷰 수
-    rating NUMERIC(2,1),                       -- 평점 (0.0~5.0)
-    search_tags TEXT[],                        -- 검색 태그 배열
-    product_url TEXT,                          -- 상품 URL
-    thumbnail_url TEXT,                        -- 썸네일 이미지 URL
-    is_sold_out BOOLEAN DEFAULT FALSE,         -- 품절 여부
-    crawled_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    category_fullname VARCHAR(500)             -- 카테고리 전체 경로 (예: "하의 > 바지 & 슬렉스")
+    product_id VARCHAR(255) PRIMARY KEY,              -- 상품 고유 ID
+    category_name VARCHAR(100),                       -- [1순위] 카테고리명
+    product_name TEXT NOT NULL,                       -- [1순위] 상품명
+    search_tags TEXT[],                               -- [1순위] 검색 태그 배열
+    price INTEGER,                                    -- [2순위] 가격 (원)
+    rating DECIMAL(2,1),                              -- [2순위] 평점 (0.0~5.0)
+    product_url TEXT,                                 -- [2순위] 상품 URL
+    thumbnail_url TEXT,                               -- [2순위] 썸네일 이미지 URL
+    brand_name VARCHAR(100),                          -- [3순위] 브랜드명
+    discount_rate INTEGER,                            -- [3순위] 할인율 (%)
+    review_count INTEGER DEFAULT 0,                   -- [3순위] 리뷰 수
+    crawled_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,   -- [3순위] 수집 시각
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP    -- [3순위] 업데이트 시각
 );
 
 -- 인덱스
 CREATE INDEX idx_product_name ON products(product_name);
 CREATE INDEX idx_product_price ON products(price);
 CREATE INDEX idx_crawled_at ON products(crawled_at);
-CREATE INDEX idx_category_fullname ON products(category_fullname);
 ```
+
+**변경사항 (v1.1.0)**:
+- ✅ is_sold_out 필드 제거 (현재 판매 상품만 존재하므로 불필요)
+- ✅ category_fullname 필드 제거 (단순화)
+- ✅ 필드 순서 우선순위별로 재배치
 
 #### 3. Crawl_History 테이블
 크롤링 작업 이력 추적
@@ -157,22 +159,35 @@ CREATE TABLE crawl_history (
 - **❌ Foreign Key 없음**: `category_name`으로 직접 조인 (유연성 우선)
 - **✅ PostgreSQL 배열**: `search_tags TEXT[]` 네이티브 배열 타입 사용
 - **✅ 인덱스 최적화**: 자주 검색하는 필드에 인덱스 설정
-- **✅ NUMERIC 정밀도**: `rating NUMERIC(2,1)` → 0.0~9.9 범위 (실제 0.0~5.0)
-- **✅ 카테고리 경로**: `category_fullname` 필드로 전체 경로 저장
+- **✅ DECIMAL 정밀도**: `rating DECIMAL(2,1)` → 0.0~5.0 범위
+- **✅ 우선순위 설계**: 1순위(핵심), 2순위(중요), 3순위(부가) 필드 분류
 
 ## 🤖 크롤링 전략 (네이버 전용)
 
-### 봇 탐지 회피 필수 규칙
+### 봇 탐지 회피 필수 규칙 (2025-11-03 검증 완료)
 1. **절대 카테고리 URL 직접 접근 금지** - 메인 페이지에서 클릭으로만 이동
-2. **랜덤 대기 시간**: 2-5초 사이
-3. **스크롤 속도**: 사람처럼 점진적으로
-4. **User-Agent**: 실제 브라우저 설정 사용
-5. **클릭 시뮬레이션**: 실제 마우스 움직임 재현
+2. **실제 클릭 사용**: `await product.click()` (window.open() 금지 - 봇 탐지됨)
+3. **정확한 셀렉터**: `a[class*="ProductCard_link"]` (판매자 링크 제외)
+4. **랜덤 대기 시간**: 1-3초 사이 (자연스러운 간격)
+5. **스크롤 방식**: 10%씩 점진적 스크롤 (10%-100%)
 
-### 셀렉터 정보 (docs/selectors/)
-- 카테고리 버튼: `#gnb-gnb button`
-- 상품 카드: `#composite-card-list li`
-- 검색 태그: `#INTRODUCE .f_JzwGZdbu a`
+### 셀렉터 정보 (2025-11-03 최종 검증)
+
+**카테고리 페이지**:
+- 상품 링크: `a[class*="ProductCard_link"]` (판매자 링크 제외!)
+- 잘못된 예: `div[class*="product"] a` (판매자 링크 포함됨)
+
+**상품 상세 페이지** (13개 필드):
+- `product_name`: `h3.DCVBehA8ZB`
+- `price`: `strong.Izp3Con8h8`
+- `brand_name`: JavaScript evaluate (테이블에서 "브랜드" → nextTd)
+- `discount_rate`: JavaScript evaluate (`/(\d+)%/` 패턴)
+- `review_count`: JavaScript evaluate (`/리뷰\s*(\d+)/` 패턴)
+- `rating`: JavaScript evaluate (`/(\d+\.\d+)/` 패턴)
+- `search_tags`: `a` 링크 중 `#`으로 시작하는 텍스트 (전체 스크롤 필요)
+- `thumbnail_url`: `img[class*="image"]`
+
+**상세**: [docs/CRAWLING_LESSONS_LEARNED.md](docs/CRAWLING_LESSONS_LEARNED.md)
 
 ## 🔧 개발 시 주의사항
 
@@ -236,6 +251,13 @@ playwright install chromium
 
 ## 📝 버전 관리
 
-- **현재 버전**: 1.0.0
+- **현재 버전**: 1.1.0
 - **버전 규칙**: Semantic Versioning (MAJOR.MINOR.PATCH)
 - **업데이트 시**: VERSION 파일과 CHANGELOG.md 동시 수정
+
+**v1.1.0 주요 변경사항 (2025-11-03)**:
+- ✅ 13개 필드로 확정 (is_sold_out 제거)
+- ✅ 봇 탐지 회피 성공 (실제 클릭 방식)
+- ✅ 셀렉터 100% 일관성 검증
+- ✅ 브랜드명 추출 개선 (테이블 방식)
+- ✅ 검색 태그 전체 수집 (스크롤 최적화)

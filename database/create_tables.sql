@@ -1,9 +1,9 @@
 -- =====================================================
 -- 네이버 쇼핑 크롤러 데이터베이스 스키마
--- Version: 1.0.2
--- Date: 2025-10-15
+-- Version: 1.1.0
+-- Date: 2025-11-03
 -- Database: PostgreSQL 13+
--- Description: 실제 DB 구조와 동기화 (category_id FK 제거)
+-- Description: is_sold_out 제거 (13개 필드)
 -- =====================================================
 
 -- 데이터베이스 생성 (이미 생성되어 있다면 스킵)
@@ -48,15 +48,14 @@ CREATE TABLE IF NOT EXISTS products (
     product_id VARCHAR(255) PRIMARY KEY,              -- 네이버 상품 ID
     category_name VARCHAR(100),                       -- 카테고리명 (예: "여성의류")
     product_name TEXT NOT NULL,                       -- 상품명
-    brand_name VARCHAR(100),                          -- 브랜드명
-    price INTEGER,                                     -- 가격 (원)
-    discount_rate INTEGER,                             -- 할인율 (%)
-    review_count INTEGER DEFAULT 0,                   -- 리뷰 수
-    rating DECIMAL(2,1),                               -- 평점 (0.0 ~ 5.0)
     search_tags TEXT[],                                -- 검색 태그 배열
+    price INTEGER,                                     -- 가격 (원)
+    rating DECIMAL(2,1),                               -- 평점 (0.0 ~ 5.0)
     product_url TEXT,                                  -- 상품 상세 페이지 URL
     thumbnail_url TEXT,                                -- 썸네일 이미지 URL
-    is_sold_out BOOLEAN DEFAULT false,                -- 품절 여부
+    brand_name VARCHAR(100),                          -- 브랜드명
+    discount_rate INTEGER,                             -- 할인율 (%)
+    review_count INTEGER DEFAULT 0,                   -- 리뷰 수
     crawled_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,   -- 크롤링 시간
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP    -- 업데이트 시간
 );
@@ -67,21 +66,20 @@ CREATE INDEX IF NOT EXISTS idx_product_price ON products(price);
 CREATE INDEX IF NOT EXISTS idx_crawled_at ON products(crawled_at);
 
 -- Products 코멘트
-COMMENT ON TABLE products IS '네이버 쇼핑 상품 정보';
+COMMENT ON TABLE products IS '네이버 쇼핑 상품 정보 (13개 필드)';
 COMMENT ON COLUMN products.product_id IS '네이버 상품 ID (Primary Key)';
-COMMENT ON COLUMN products.category_name IS '카테고리명 (Foreign Key 없음)';
-COMMENT ON COLUMN products.product_name IS '상품명';
-COMMENT ON COLUMN products.brand_name IS '브랜드명';
-COMMENT ON COLUMN products.price IS '가격 (원)';
-COMMENT ON COLUMN products.discount_rate IS '할인율 (%)';
-COMMENT ON COLUMN products.review_count IS '리뷰 수';
-COMMENT ON COLUMN products.rating IS '평점 (0.0 ~ 5.0)';
-COMMENT ON COLUMN products.search_tags IS '검색 태그 배열';
-COMMENT ON COLUMN products.product_url IS '상품 상세 페이지 URL';
-COMMENT ON COLUMN products.thumbnail_url IS '썸네일 이미지 URL';
-COMMENT ON COLUMN products.is_sold_out IS '품절 여부';
-COMMENT ON COLUMN products.crawled_at IS '크롤링 시간';
-COMMENT ON COLUMN products.updated_at IS '업데이트 시간';
+COMMENT ON COLUMN products.category_name IS '카테고리명 [1순위]';
+COMMENT ON COLUMN products.product_name IS '상품명 [1순위]';
+COMMENT ON COLUMN products.search_tags IS '검색 태그 배열 [1순위]';
+COMMENT ON COLUMN products.price IS '가격 (원) [2순위]';
+COMMENT ON COLUMN products.rating IS '평점 (0.0 ~ 5.0) [2순위]';
+COMMENT ON COLUMN products.product_url IS '상품 상세 페이지 URL [2순위]';
+COMMENT ON COLUMN products.thumbnail_url IS '썸네일 이미지 URL [2순위]';
+COMMENT ON COLUMN products.brand_name IS '브랜드명 [3순위]';
+COMMENT ON COLUMN products.discount_rate IS '할인율 (%) [3순위]';
+COMMENT ON COLUMN products.review_count IS '리뷰 수 [3순위]';
+COMMENT ON COLUMN products.crawled_at IS '크롤링 시간 [3순위]';
+COMMENT ON COLUMN products.updated_at IS '업데이트 시간 [3순위]';
 
 -- =====================================================
 -- Crawl_History 테이블 (크롤링 이력)

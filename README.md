@@ -79,24 +79,30 @@ python3 product_collector_gui.py
 
 ---
 
-## 수집 데이터
+## 수집 데이터 (v1.1.0)
 
-### 상품 정보
-- 상품명
-- 가격
-- 브랜드/몰 이름
-- 리뷰 개수
-- 평점
-- 할인율
-- 상품 URL
-- 썸네일 이미지
+### 총 13개 필드 수집
 
-### 상세 정보
-- **검색 태그** (관련 태그 섹션의 해시태그)
-- 옵션 정보
-- 상세 이미지
-- 판매자 정보
-- 배송 정보
+**1순위 필드** (핵심 정보):
+- `category_name`: 카테고리명 (예: "여성의류")
+- `product_name`: 상품명
+- `search_tags`: 검색 태그 배열 (해시태그)
+
+**2순위 필드** (중요 정보):
+- `price`: 가격 (원)
+- `rating`: 평점 (0.0~5.0)
+- `product_url`: 상품 페이지 URL
+- `thumbnail_url`: 썸네일 이미지 URL
+
+**3순위 필드** (부가 정보):
+- `brand_name`: 브랜드명
+- `discount_rate`: 할인율 (%)
+- `review_count`: 리뷰 개수
+- `crawled_at`: 수집 시각
+- `updated_at`: 업데이트 시각
+
+**제거된 필드**:
+- ~~`is_sold_out`~~ (현재 판매 상품만 존재하므로 불필요)
 
 ---
 
@@ -168,28 +174,31 @@ PostgreSQL
 
 ---
 
-## 데이터베이스 스키마
+## 데이터베이스 스키마 (v1.1.0)
 
-### products 테이블
+### products 테이블 (13개 필드)
 ```sql
 CREATE TABLE products (
-    product_id VARCHAR(50) PRIMARY KEY,
-    category_id INTEGER,
-    category_name VARCHAR(100),
-    product_name TEXT,
-    brand_name VARCHAR(200),
-    price INTEGER,
-    discount_rate INTEGER,
-    review_count INTEGER,
-    rating NUMERIC(3,2),
-    search_tags TEXT[],              -- 검색 태그 배열
-    product_url TEXT,
-    thumbnail_url TEXT,
-    is_sold_out BOOLEAN DEFAULT FALSE,
-    crawled_at TIMESTAMP,
-    updated_at TIMESTAMP
+    product_id VARCHAR(255) PRIMARY KEY,
+    category_name VARCHAR(100),                       -- [1순위]
+    product_name TEXT NOT NULL,                       -- [1순위]
+    search_tags TEXT[],                               -- [1순위] 검색 태그 배열
+    price INTEGER,                                    -- [2순위]
+    rating DECIMAL(2,1),                              -- [2순위] 0.0~5.0
+    product_url TEXT,                                 -- [2순위]
+    thumbnail_url TEXT,                               -- [2순위]
+    brand_name VARCHAR(100),                          -- [3순위]
+    discount_rate INTEGER,                            -- [3순위]
+    review_count INTEGER DEFAULT 0,                   -- [3순위]
+    crawled_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,   -- [3순위]
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP    -- [3순위]
 );
 ```
+
+**변경사항 (v1.1.0)**:
+- ✅ is_sold_out 필드 제거 (현재 판매 상품만 존재)
+- ✅ 필드 순서 우선순위별로 재배치
+- ✅ NOT NULL 제약 조건 추가 (product_name)
 
 ---
 
@@ -231,12 +240,22 @@ MIT License
 이 프로젝트는 네이버 쇼핑의 상품 정보를 수집하는 도구입니다.
 **크롤링 윤리**를 준수하고, 과도한 요청으로 서버에 부하를 주지 마세요.
 
+**주요 성과 (2025-11-03)**:
+- ✅ 13개 필드 완벽 수집 (100% 일관성)
+- ✅ 봇 탐지 회피 성공 (실제 클릭 방식)
+- ✅ 셀렉터 검증 완료 (13번째, 14번째 상품)
+- ✅ 브랜드명 추출 개선 (테이블에서 정확 추출)
+- ✅ 검색 태그 전체 수집 (10%-100% 스크롤)
+
 **개발 과정**:
-- 캡차 자동 해결 실패 (Anti-Captcha, OCR, AI 모두 실패)
-- 수동 해결 방식 채택 → 안정적 운영
-- 검색 태그 수집 성공 (여성의류 20개 상품 테스트 완료)
+- 캡차 자동 해결 실패 → 수동 해결 방식 (2025-09-26)
+- window.open() 봇 탐지 → 실제 클릭 방식 (2025-11-03)
+- 판매자 링크 오류 → 정확한 셀렉터 (2025-11-03)
+- 브랜드명 누락 → 테이블 추출 방식 (2025-11-03)
+
+**상세 기록**: [docs/CRAWLING_LESSONS_LEARNED.md](docs/CRAWLING_LESSONS_LEARNED.md)
 
 ---
 
-**버전**: 1.0
-**최종 업데이트**: 2025-10-15
+**버전**: 1.1.0
+**최종 업데이트**: 2025-11-03

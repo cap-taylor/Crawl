@@ -1,5 +1,5 @@
 # 🎯 Crawl 프로젝트 - Claude 필수 지침
-> Last Updated: 2025-10-31 19:26
+> Last Updated: 2025-11-03 16:13
 
 
 ## 🔴 **절대 금지 (NEVER DO THIS)**
@@ -167,7 +167,7 @@ C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -ExecutionPolicy Bypas
 - **비밀번호**: `.env` 파일에서 `DB_PASSWORD` 설정
 - **테이블**: categories, products, crawl_history
 
-### 데이터베이스 스키마 구조
+### 데이터베이스 스키마 구조 (v1.1.0 - 2025-11-03)
 **중요**: SQL 스키마 파일(`database/create_tables.sql`)은 실제 DB 구조와 동기화됨
 
 **categories 테이블**:
@@ -176,18 +176,27 @@ C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -ExecutionPolicy Bypas
 - `is_active` BOOLEAN DEFAULT false
 - `created_at` TIMESTAMP
 
-**products 테이블**:
+**products 테이블 (13개 필드)**:
 - `product_id` VARCHAR(255) PRIMARY KEY
-- `category_name` VARCHAR(100) (**FK 없음** - 단순 참조)
-- `product_name`, `brand_name`, `price`, `discount_rate`
-- `review_count`, `rating`, `search_tags TEXT[]`
-- `product_url`, `thumbnail_url`, `is_sold_out`
-- `crawled_at`, `updated_at`
+- `category_name` VARCHAR(100) [1순위] (**FK 없음** - 단순 참조)
+- `product_name` TEXT NOT NULL [1순위]
+- `search_tags` TEXT[] [1순위] (PostgreSQL 배열)
+- `price` INTEGER [2순위]
+- `rating` DECIMAL(2,1) [2순위] (0.0~5.0)
+- `product_url` TEXT [2순위]
+- `thumbnail_url` TEXT [2순위]
+- `brand_name` VARCHAR(100) [3순위]
+- `discount_rate` INTEGER [3순위]
+- `review_count` INTEGER [3순위]
+- `crawled_at` TIMESTAMP [3순위]
+- `updated_at` TIMESTAMP [3순위]
 
-**설계 특징**:
+**설계 특징 (v1.1.0)**:
 - ❌ Foreign Key 제약 조건 없음 (유연성 우선)
 - ✅ `category_name`으로 직접 조인
 - ✅ `search_tags`는 PostgreSQL 배열 타입
+- ✅ **is_sold_out 제거** (현재 판매 상품만 존재하므로 불필요)
+- ✅ 우선순위별 필드 분류 (1순위 핵심 → 2순위 중요 → 3순위 부가)
 
 ---
 
