@@ -14,6 +14,19 @@ from typing import Optional
 import json
 import sys
 import re
+import traceback
+import logging
+
+# 터미널 디버깅 로거 설정
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='[%(asctime)s] %(levelname)s - %(name)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout),  # 터미널 출력
+        logging.FileHandler('gui_debug.log', encoding='utf-8')  # 파일 저장
+    ]
+)
+logger = logging.getLogger('GUI')
 
 # SimpleCrawler import
 sys.path.append(str(Path(__file__).parent))
@@ -78,10 +91,21 @@ class ProductCollectorGUI:
     """상품 수집 GUI (v1.2.0) - 모든 카테고리 + 무한 모드 + DB 직접 저장"""
 
     def __init__(self):
-        self.root = ctk.CTk()
-        self.root.withdraw()
+        logger.info("=" * 70)
+        logger.info("GUI 초기화 시작")
+        logger.info("=" * 70)
 
-        self.root.title("네이버 쇼핑 상품 수집기 v1.2.0")
+        try:
+            self.root = ctk.CTk()
+            self.root.withdraw()
+            logger.info("✓ CTk 루트 윈도우 생성 완료")
+
+            self.root.title("네이버 쇼핑 상품 수집기 v1.2.0")
+            logger.info("✓ 윈도우 타이틀 설정 완료")
+        except Exception as e:
+            logger.error(f"✗ GUI 초기화 실패: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise
 
         window_width = 900
         window_height = 750
@@ -299,6 +323,18 @@ class ProductCollectorGUI:
             font=("Arial", 12, "bold")
         ).pack(side="left")
 
+        # 로그 복사 버튼
+        ctk.CTkButton(
+            log_header,
+            text="로그 복사",
+            command=self._copy_logs,
+            width=90,
+            height=28,
+            font=("Arial", 11),
+            fg_color="gray40",
+            hover_color="gray30"
+        ).pack(side="right", padx=5)
+
         self.log_text = ctk.CTkTextbox(log_frame, font=("Courier", 11))
         self.log_text.pack(fill="both", expand=True, padx=10, pady=(0, 10))
 
@@ -435,14 +471,63 @@ class ProductCollectorGUI:
             self._log("")
             self._log("중지 요청... (현재 상품 완료 후 종료)")
 
+    def _copy_logs(self):
+        """로그 내용을 클립보드에 복사"""
+        try:
+            # 로그 내용 가져오기
+            log_content = self.log_text.get("1.0", "end-1c")
+
+            if not log_content.strip():
+                self._log("복사할 로그가 없습니다")
+                return
+
+            # 클립보드 복사 (UTF-8 인코딩 보장)
+            self.clipboard_clear()
+            self.clipboard_append(log_content)
+            self.update()  # 클립보드 업데이트 강제 적용
+
+            # 복사 검증
+            try:
+                copied = self.clipboard_get()
+                if copied != log_content:
+                    logger.warning("클립보드 복사 검증 실패: 내용이 일치하지 않음")
+                    self._log("로그 복사 경고: 일부 내용이 누락되었을 수 있습니다")
+                else:
+                    logger.info(f"로그 복사 성공: {len(log_content)} 문자, 한글 {len([c for c in log_content if ord(c) > 127])}자")
+            except Exception as verify_error:
+                logger.warning(f"복사 검증 실패: {verify_error}")
+
+            # 임시 메시지 표시
+            original_text = self.status_label.cget("text")
+            self.status_label.configure(text="로그 복사 완료!")
+            self.after(2000, lambda: self.status_label.configure(text=original_text if original_text != "로그 복사 완료!" else "대기 중"))
+
+        except Exception as e:
+            error_msg = f"로그 복사 실패: {str(e)}"
+            self._log(error_msg)
+            logger.error("=" * 70)
+            logger.error("✗ 로그 복사 오류!")
+            logger.error(f"오류 타입: {type(e).__name__}")
+            logger.error(f"오류 메시지: {str(e)}")
+            logger.error(traceback.format_exc())
+            logger.error("=" * 70)
+
     def _run_crawler(self, category_name: str, product_count: Optional[int]):
         """크롤러 실행"""
+        logger.info("=" * 70)
+        logger.info(f"크롤러 실행 시작: 카테고리={category_name}, 개수={product_count}")
+        logger.info("=" * 70)
+
         try:
+            logger.debug("AsyncIO 이벤트 루프 생성 중...")
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
+            logger.debug("✓ 이벤트 루프 생성 완료")
 
             category_id = self.categories.get(category_name, "10000107")
+            logger.info(f"카테고리 ID: {category_id}")
 
+            logger.debug("SimpleCrawler 인스턴스 생성 중...")
             self.crawler = SimpleCrawler(
                 category_name=category_name,
                 category_id=category_id,
@@ -450,8 +535,9 @@ class ProductCollectorGUI:
                 headless=False,
                 save_to_db=True  # DB 직접 저장
             )
+            logger.debug("✓ SimpleCrawler 생성 완료")
 
-            # 로그 리다이렉트
+            # 로그 리다이렉트 (인스턴스별 격리)
             import io
             import sys as sys_module
 
@@ -463,38 +549,110 @@ class ProductCollectorGUI:
                         self.logger(text.strip())
                     return len(text)
 
+            # 원본 stdout 백업
+            logger.debug("stdout 리다이렉트 설정 중...")
+            original_stdout = sys_module.stdout
             sys_module.stdout = LogRedirect(self._log)
+            logger.debug("✓ stdout 리다이렉트 완료")
 
             # 크롤링 실행
+            logger.info("크롤링 실행 시작...")
             products = loop.run_until_complete(self.crawler.crawl())
+            logger.info(f"크롤링 완료: {len(products) if products else 0}개 수집")
 
             # 결과
             self._log("")
             if products:
                 self._log(f"수집 완료! 총 {len(products)}개 상품 → DB 저장됨")
                 self.status_label.configure(text="수집 완료", text_color="#4CAF50")
+                logger.info(f"✓ 수집 성공: {len(products)}개")
             else:
                 self._log("수집된 상품이 없습니다")
                 self.status_label.configure(text="수집 실패", text_color="#F44336")
+                logger.warning("⚠ 수집 실패: 0개")
 
         except Exception as e:
-            self._log(f"오류 발생: {str(e)}")
+            error_msg = str(e)
+            error_trace = traceback.format_exc()
+
+            # GUI 로그
+            self._log(f"오류 발생: {error_msg}")
             self.status_label.configure(text="오류 발생", text_color="#F44336")
 
+            # 터미널 디버깅 로그
+            logger.error("=" * 70)
+            logger.error("✗ 크롤러 실행 중 오류 발생!")
+            logger.error("=" * 70)
+            logger.error(f"오류 타입: {type(e).__name__}")
+            logger.error(f"오류 메시지: {error_msg}")
+            logger.error("\n스택 트레이스:")
+            logger.error(error_trace)
+            logger.error("=" * 70)
+
         finally:
+            # stdout 복원 (GUI 격리)
+            logger.debug("stdout 복원 중...")
+            sys_module.stdout = original_stdout
+            logger.debug("✓ stdout 복원 완료")
+
             self.is_running = False
             self.start_button.configure(state="normal")
             self.stop_button.configure(state="disabled")
+            logger.info("크롤러 종료 완료")
 
     def run(self):
         """GUI 실행"""
-        self.root.mainloop()
+        logger.info("GUI 메인 루프 시작")
+        try:
+            self.root.mainloop()
+        except Exception as e:
+            logger.error("=" * 70)
+            logger.error("✗ GUI 메인 루프 오류!")
+            logger.error("=" * 70)
+            logger.error(f"오류 타입: {type(e).__name__}")
+            logger.error(f"오류 메시지: {str(e)}")
+            logger.error("\n스택 트레이스:")
+            logger.error(traceback.format_exc())
+            logger.error("=" * 70)
+            raise
 
 
 def main():
     """메인 함수"""
-    app = ProductCollectorGUI()
-    app.run()
+    logger.info("=" * 70)
+    logger.info("프로그램 시작")
+    logger.info("=" * 70)
+
+    try:
+        logger.info("ProductCollectorGUI 생성 중...")
+        app = ProductCollectorGUI()
+        logger.info("✓ GUI 생성 완료")
+
+        logger.info("GUI 실행 중...")
+        app.run()
+        logger.info("✓ GUI 정상 종료")
+
+    except KeyboardInterrupt:
+        logger.warning("\n사용자가 프로그램을 중단했습니다 (Ctrl+C)")
+
+    except Exception as e:
+        logger.error("=" * 70)
+        logger.error("✗ 프로그램 실행 중 치명적 오류!")
+        logger.error("=" * 70)
+        logger.error(f"오류 타입: {type(e).__name__}")
+        logger.error(f"오류 메시지: {str(e)}")
+        logger.error("\n스택 트레이스:")
+        logger.error(traceback.format_exc())
+        logger.error("=" * 70)
+        logger.error("\n디버깅 정보:")
+        logger.error(f"- 로그 파일: gui_debug.log")
+        logger.error(f"- Python 버전: {sys.version}")
+        logger.error(f"- customtkinter 버전: {ctk.__version__}")
+        logger.error("=" * 70)
+        raise
+
+    finally:
+        logger.info("프로그램 종료")
 
 
 if __name__ == "__main__":

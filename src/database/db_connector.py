@@ -212,48 +212,56 @@ class DatabaseConnector:
         cursor = self.conn.cursor()
 
         try:
-            # 카테고리 유효성 검사 (선택사항)
-            self.validate_category(category_name)
-
             # product_id 추출
-            product_url = product_data.get('product_url', '')
-            product_id = self.extract_product_id(product_url)
+            product_id = product_data.get('product_id')
+            if not product_id:
+                product_url = product_data.get('product_url', '')
+                product_id = self.extract_product_id(product_url)
 
             # 중복 체크
             if skip_duplicates and self.is_duplicate_product(product_id, product_data):
-                print(f"[DB] 상품 스킵 (중복): {product_id}")
                 return 'skipped'
 
-            # 데이터 추출
-            detail_info = product_data.get('detail_page_info', {})
-            product_info = product_data.get('product_info', {})
+            # SimpleCrawler 형식 지원 (단순 딕셔너리)
+            if 'product_name' in product_data:
+                # SimpleCrawler 형식
+                product_name = product_data.get('product_name')
+                brand_name = product_data.get('brand_name')
+                price = product_data.get('price')
+                discount_rate = product_data.get('discount_rate')
+                review_count = product_data.get('review_count', 0)
+                rating = product_data.get('rating')
+                search_tags = product_data.get('search_tags', [])
+                thumbnail_url = product_data.get('thumbnail_url')
+                product_url = product_data.get('product_url', '')
+            else:
+                # 기존 형식 (detail_page_info/product_info)
+                detail_info = product_data.get('detail_page_info', {})
+                product_info = product_data.get('product_info', {})
 
-            # 모든 필드 정리 (detail_info 우선, 없으면 product_info)
-            product_name = detail_info.get('detail_product_name') or product_info.get('product_name', f"상품_{product_id}")
-            brand_name = detail_info.get('brand_name') or product_info.get('brand', None)
-            price = detail_info.get('detail_price') or (int(product_info.get('price', 0)) if product_info.get('price') else None)
-            discount_rate = detail_info.get('discount_rate') or (int(product_info.get('discount_rate', 0)) if product_info.get('discount_rate') else None)
-            review_count = detail_info.get('detail_review_count') or (int(product_info.get('review_count', 0)) if product_info.get('review_count') else 0)
-            rating = detail_info.get('rating') or (float(product_info.get('rating', 0)) if product_info.get('rating') else None)
-            search_tags = detail_info.get('search_tags', [])
-            thumbnail_url = detail_info.get('thumbnail_url') or product_info.get('thumbnail_url', None)
-            is_sold_out = detail_info.get('is_sold_out', False)
-            category_fullname = detail_info.get('category_fullname', category_name)  # 전체 카테고리 경로
+                product_name = detail_info.get('detail_product_name') or product_info.get('product_name', f"상품_{product_id}")
+                brand_name = detail_info.get('brand_name') or product_info.get('brand', None)
+                price = detail_info.get('detail_price') or (int(product_info.get('price', 0)) if product_info.get('price') else None)
+                discount_rate = detail_info.get('discount_rate') or (int(product_info.get('discount_rate', 0)) if product_info.get('discount_rate') else None)
+                review_count = detail_info.get('detail_review_count') or (int(product_info.get('review_count', 0)) if product_info.get('review_count') else 0)
+                rating = detail_info.get('rating') or (float(product_info.get('rating', 0)) if product_info.get('rating') else None)
+                search_tags = detail_info.get('search_tags', [])
+                thumbnail_url = detail_info.get('thumbnail_url') or product_info.get('thumbnail_url', None)
+                product_url = product_data.get('product_url', '')
 
-            # 상품 데이터 저장 (UPSERT) - category_fullname 추가
+            # 상품 데이터 저장 (UPSERT) - 13개 필드
             cursor.execute(
                 """
                 INSERT INTO products (
-                    product_id, category_name, category_fullname, product_name,
+                    product_id, category_name, product_name,
                     brand_name, price, discount_rate, review_count, rating,
-                    search_tags, product_url, thumbnail_url, is_sold_out,
+                    search_tags, product_url, thumbnail_url,
                     crawled_at, updated_at
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 ON CONFLICT (product_id)
                 DO UPDATE SET
                     category_name = EXCLUDED.category_name,
-                    category_fullname = EXCLUDED.category_fullname,
                     product_name = EXCLUDED.product_name,
                     brand_name = EXCLUDED.brand_name,
                     price = EXCLUDED.price,
@@ -263,14 +271,12 @@ class DatabaseConnector:
                     search_tags = EXCLUDED.search_tags,
                     product_url = EXCLUDED.product_url,
                     thumbnail_url = EXCLUDED.thumbnail_url,
-                    is_sold_out = EXCLUDED.is_sold_out,
-                    updated_at = EXCLUDED.updated_at
+                    updated_at = CURRENT_TIMESTAMP
                 """,
                 (
-                    product_id, category_name, category_fullname, product_name,
+                    product_id, category_name, product_name,
                     brand_name, price, discount_rate, review_count, rating,
-                    search_tags, product_url, thumbnail_url, is_sold_out,
-                    datetime.now(), datetime.now()
+                    search_tags, product_url, thumbnail_url
                 )
             )
 

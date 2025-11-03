@@ -39,8 +39,9 @@ class SimpleCrawler:
         self.should_stop = False
         self.products_data = []
 
-        # DB 연결 (save_to_db가 True일 때만)
+        # DB 연결 (save_to_db가 True일 때만) - 세션 유지 방식
         self.db = DatabaseConnector() if save_to_db else None
+        self.db_connected = False
 
     async def crawl(self) -> List[Dict]:
         """크롤링 실행"""
@@ -60,6 +61,16 @@ class SimpleCrawler:
             page = await context.new_page()
 
             try:
+                # DB 연결 (세션 유지)
+                if self.save_to_db and self.db:
+                    try:
+                        self.db.connect()
+                        self.db_connected = True
+                        print("[DB] 연결 성공")
+                    except Exception as e:
+                        print(f"[DB] 연결 실패: {str(e)}")
+                        self.db_connected = False
+
                 # 1. 네이버 메인 → 쇼핑 진입
                 print("[1/4] 네이버 메인 페이지 접속...")
                 await page.goto('https://www.naver.com')
@@ -78,82 +89,168 @@ class SimpleCrawler:
                     page = all_pages[-1]
                     await page.wait_for_load_state('networkidle')
 
-                # 2. 카테고리 진입
+                # 2. 카테고리 진입 (CRAWLING_LESSONS_LEARNED.md 검증된 방법)
                 print(f"[3/4] '{self.category_name}' 카테고리 진입...")
                 category_btn = await page.wait_for_selector('button:has-text("카테고리")')
                 await category_btn.click()
-                await asyncio.sleep(1)
+                await asyncio.sleep(2)  # 메뉴 열리기 대기
 
-                womens = await page.wait_for_selector(f'a[data-name="{self.category_name}"]')
-                await womens.click()
+                # 우선순위별 셀렉터 fallback (문서 1293-1296줄)
+                category_elem = None
+
+                # 1순위: ID 기반 (⭐⭐⭐⭐⭐)
+                if self.category_id:
+                    category_elem = await page.query_selector(f'#cat_layer_item_{self.category_id}')
+
+                # 2순위: data-id 속성 (⭐⭐⭐⭐)
+                if not category_elem and self.category_id:
+                    category_elem = await page.query_selector(f'[data-id="{self.category_id}"]')
+
+                # 3순위: data-name 속성 (⭐⭐⭐)
+                if not category_elem:
+                    category_elem = await page.query_selector(f'a[data-name="{self.category_name}"]')
+
+                if not category_elem:
+                    raise Exception(f"카테고리 '{self.category_name}' (ID: {self.category_id})를 찾을 수 없습니다")
+
+                await category_elem.click()
                 await asyncio.sleep(3)
 
-                # 3. 상품 링크 수집
+                # 캡차 대기 (15초 고정)
+                print("\n" + "="*60)
+                print("⚠️  캡차 확인 - 15초 대기")
+                print("="*60)
+                print("브라우저에서 캡차를 수동으로 해결해주세요")
+                print("="*60)
+                for i in range(15, 0, -5):
+                    print(f"[대기] 남은 시간: {i}초...")
+                    await asyncio.sleep(5)
+                print("✅ 대기 완료! 크롤링 시작...\n")
+                await asyncio.sleep(2)
+
+                # 3. 무한 스크롤 수집 시작
                 if self.product_count:
                     print(f"[4/4] 상품 {self.product_count}개 수집 시작...\n")
                 else:
                     print(f"[4/4] 무한 수집 시작 (중지 버튼으로 멈출 수 있습니다)...\n")
 
-                product_links = await page.query_selector_all('a[class*="ProductCard_link"]')
-
                 collected_count = 0
-                for idx, product in enumerate(product_links, 1):
-                    # 무한 모드가 아니면 개수 체크
-                    if self.product_count and collected_count >= self.product_count:
-                        break
+                processed_indices = set()  # 이미 처리한 상품 인덱스 추적
+                scroll_count = 0
+                max_scroll_attempts = 100  # 최대 스크롤 횟수
+
+                while scroll_count < max_scroll_attempts:
                     if self.should_stop:
                         break
 
-                    try:
-                        # 상품 클릭 (실제 클릭 방식)
-                        await product.click()
-                        await asyncio.sleep(2)
+                    # 현재 페이지의 모든 상품 링크 가져오기
+                    product_links = await page.query_selector_all('a[class*="ProductCard_link"]')
+                    current_total = len(product_links)
 
-                        # 새 탭 찾기
-                        all_pages = context.pages
-                        if len(all_pages) <= 1:
-                            print(f"[{idx}번] 탭 열림 실패 - SKIP")
+                    # 새로운 상품만 수집
+                    for idx in range(len(product_links)):
+                        # 목표 개수 도달 체크
+                        if self.product_count and collected_count >= self.product_count:
+                            print(f"\n목표 개수 도달! {collected_count}개 수집 완료")
+                            break
+
+                        if self.should_stop:
+                            break
+
+                        # 첫 14개 상품 건너뛰기 (광고)
+                        if idx < 14:
+                            processed_indices.add(idx)
                             continue
 
-                        detail_page = all_pages[-1]
-                        await detail_page.wait_for_load_state('domcontentloaded')
-                        await asyncio.sleep(1)
+                        # 이미 처리한 상품은 건너뛰기
+                        if idx in processed_indices:
+                            continue
 
-                        # 상품 정보 수집
-                        product_data = await self._collect_product_info(detail_page)
+                        processed_indices.add(idx)
 
-                        if product_data and product_data.get('product_name'):
-                            self.products_data.append(product_data)
-                            collected_count += 1
+                        try:
+                            # 상품 클릭 (실제 클릭 방식)
+                            product = product_links[idx]
+                            await product.click()
+                            await asyncio.sleep(2)
 
-                            # 즉시 DB 저장
-                            if self.save_to_db and self.db:
-                                try:
-                                    self.db.connect()
-                                    self.db.save_product(product_data)
-                                    self.db.close()
-                                    print(f"[{collected_count}] {product_data['product_name'][:40]} - DB 저장 ✓")
-                                except Exception as e:
-                                    print(f"[{collected_count}] DB 저장 실패: {str(e)[:30]}")
-                            else:
-                                if self.product_count:
-                                    print(f"[{collected_count}/{self.product_count}] {product_data['product_name'][:40]} ✓")
+                            # 새 탭 찾기
+                            all_pages = context.pages
+                            if len(all_pages) <= 1:
+                                print(f"[{idx+1}번] 탭 열림 실패 - SKIP")
+                                continue
+
+                            detail_page = all_pages[-1]
+                            await detail_page.wait_for_load_state('domcontentloaded')
+                            await asyncio.sleep(1)
+
+                            # 상품 정보 수집
+                            product_data = await self._collect_product_info(detail_page)
+
+                            if product_data and product_data.get('product_name'):
+                                self.products_data.append(product_data)
+                                collected_count += 1
+
+                                # 즉시 DB 저장 (세션 유지)
+                                if self.save_to_db and self.db and self.db_connected:
+                                    try:
+                                        result = self.db.save_product(self.category_name, product_data)
+                                        if result == 'saved':
+                                            print(f"[{collected_count}] {product_data['product_name'][:50]}... | 가격: {product_data.get('price', 'N/A'):,}원 - DB 저장 ✓")
+                                        elif result == 'skipped':
+                                            print(f"[{collected_count}] {product_data['product_name'][:50]}... - 중복 스킵")
+                                    except Exception as e:
+                                        print(f"[{collected_count}] DB 저장 실패: {str(e)}")
                                 else:
-                                    print(f"[{collected_count}] {product_data['product_name'][:40]} ✓")
-                        else:
-                            print(f"[{idx}번] 수집 실패 - SKIP")
+                                    if self.product_count:
+                                        print(f"[{collected_count}/{self.product_count}] {product_data['product_name'][:50]}... ✓")
+                                    else:
+                                        print(f"[{collected_count}] {product_data['product_name'][:50]}... ✓")
+                            else:
+                                print(f"[{idx+1}번] 수집 실패 (상품명 없음) - SKIP")
 
-                        # 탭 닫기
-                        await detail_page.close()
-                        await asyncio.sleep(1)
+                            # 탭 닫기
+                            await detail_page.close()
+                            await asyncio.sleep(1)
 
-                    except Exception as e:
-                        print(f"[{idx}번] 오류: {str(e)[:50]} - SKIP")
-                        continue
+                        except Exception as e:
+                            print(f"[{idx+1}번] 오류: {str(e)[:50]} - SKIP")
+                            continue
+
+                    # 목표 개수 도달 시 종료
+                    if self.product_count and collected_count >= self.product_count:
+                        break
+
+                    if self.should_stop:
+                        break
+
+                    # 스크롤하여 새 상품 로드
+                    before_scroll = current_total
+                    await page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
+                    await asyncio.sleep(3)  # 로딩 대기
+
+                    # 스크롤 후 상품 개수 확인
+                    product_links_after = await page.query_selector_all('a[class*="ProductCard_link"]')
+                    after_scroll = len(product_links_after)
+
+                    scroll_count += 1
+
+                    if after_scroll > before_scroll:
+                        print(f"\n[스크롤 #{scroll_count}] {before_scroll}개 → {after_scroll}개 (증가: {after_scroll - before_scroll}개)")
+                    else:
+                        print(f"\n더 이상 새 상품이 로드되지 않습니다.")
+                        break
 
                 print(f"\n수집 완료! 총 {len(self.products_data)}개")
 
             finally:
+                # DB 연결 종료
+                if self.db_connected and self.db:
+                    try:
+                        self.db.close()
+                        print("[DB] 연결 종료")
+                    except:
+                        pass
                 await browser.close()
 
             return self.products_data
@@ -175,10 +272,7 @@ class SimpleCrawler:
             elem = await page.query_selector('h3.DCVBehA8ZB')
             data['product_name'] = await elem.inner_text() if elem else None
 
-            # 4. brand_name (테이블에서)
-            await page.evaluate('window.scrollTo(0, document.body.scrollHeight * 0.3)')
-            await asyncio.sleep(0.5)
-
+            # 4. brand_name (테이블에서) - 스크롤 없이 바로 수집
             brand_result = await page.evaluate('''() => {
                 const allElements = document.querySelectorAll('td, th');
                 for (let elem of allElements) {
@@ -254,22 +348,27 @@ class SimpleCrawler:
             }''')
             data['rating'] = rating_result
 
-            # 9. search_tags (전체 스크롤)
-            all_tags_found = set()
-            for scroll_pos in range(10, 101, 10):
-                await page.evaluate(f'window.scrollTo(0, document.body.scrollHeight * {scroll_pos/100})')
-                await asyncio.sleep(0.3)
+            # 9. search_tags (최적화: 2번만 스크롤)
+            # 30% 스크롤 (brand_name 위치)
+            await page.evaluate('window.scrollTo(0, document.body.scrollHeight * 0.3)')
+            await asyncio.sleep(0.5)
 
-                all_links = await page.query_selector_all('a')
-                for link in all_links:
-                    try:
-                        text = await link.inner_text()
-                        if text and text.strip().startswith('#'):
-                            clean_tag = text.strip().replace('#', '').strip()
-                            if 1 < len(clean_tag) < 30:
-                                all_tags_found.add(clean_tag)
-                    except:
-                        pass
+            # 50% 스크롤 (search_tags 위치)
+            await page.evaluate('window.scrollTo(0, document.body.scrollHeight * 0.5)')
+            await asyncio.sleep(0.5)
+
+            # 태그 수집
+            all_tags_found = set()
+            all_links = await page.query_selector_all('a')
+            for link in all_links:
+                try:
+                    text = await link.inner_text()
+                    if text and text.strip().startswith('#'):
+                        clean_tag = text.strip().replace('#', '').strip()
+                        if 1 < len(clean_tag) < 30:
+                            all_tags_found.add(clean_tag)
+                except:
+                    pass
 
             data['search_tags'] = list(all_tags_found)
 
