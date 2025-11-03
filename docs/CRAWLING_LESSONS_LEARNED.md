@@ -3,11 +3,98 @@
 > 이 문서는 네이버 쇼핑 크롤링 개발 과정에서 겪은 모든 시행착오와 해결책을 기록합니다.
 > **절대 같은 실수를 반복하지 않기 위한 필수 참고 문서입니다.**
 
-## 📅 최종 업데이트: 2025-11-03 18:45
+## 📅 최종 업데이트: 2025-11-03 20:22
 
 ---
 
 ## 🚨 중요 업데이트 (2025-11-03)
+
+### ✅ GUI 레이아웃 여백 문제 해결 (2025-11-03)
+
+**문제점**:
+- 헤더와 통계 대시보드/컨트롤 패널 사이에 여백 없음
+- UI 요소들이 헤더에 바로 붙어있어 답답한 느낌
+- 디자인 일관성 부족
+
+**원인**:
+1. **메인 콘텐츠 영역**: `main_content.grid()`에 `pady` 누락
+2. **컨트롤 패널**: `control_panel.grid()`에 `pady` 누락
+3. Grid 레이아웃에서 상단 여백을 명시적으로 지정하지 않으면 기본값 0으로 설정됨
+
+**해결책**:
+```python
+# 메인 콘텐츠 영역 (오른쪽 칼럼 - 통계 대시보드)
+def _create_main_content(self, parent):
+    main_content = ctk.CTkFrame(parent, fg_color="transparent")
+    main_content.grid(row=0, column=1, sticky="nsew", pady=(15, 0))  # 위쪽 여백 15px 추가
+
+# 컨트롤 패널 (왼쪽 칼럼 - 수집 카테고리)
+def _create_control_panel(self, parent):
+    control_panel = ctk.CTkFrame(parent, fg_color=self.colors['bg_card'], corner_radius=8)
+    control_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 10), pady=(15, 0))  # 위쪽 여백 15px 추가
+```
+
+**적용 결과**:
+- ✅ 헤더와 통계 대시보드 사이 15px 간격
+- ✅ 헤더와 컨트롤 패널 사이 15px 간격
+- ✅ 좌우 칼럼 모두 동일한 상단 여백으로 디자인 일관성 확보
+- ✅ 시각적으로 깔끔하고 여유있는 레이아웃
+
+**코드 위치**:
+- `product_collector_gui.py:261` (컨트롤 패널 여백)
+- `product_collector_gui.py:377` (메인 콘텐츠 여백)
+
+**교훈**:
+- Grid 레이아웃에서는 `padx`, `pady`를 명시적으로 지정해야 함
+- 여백 문제 발생 시, 해당 위젯이 배치될 때 사용한 grid/pack의 패딩 매개변수 확인
+- 2칼럼 레이아웃에서는 양쪽 칼럼의 여백을 동일하게 설정해야 일관성 유지
+
+---
+
+### ✅ 버전 관리 통합 - VERSION 파일 자동 반영 (2025-11-03 17:30)
+
+**문제점**:
+- GUI 버전이 `product_collector_gui.py`에 하드코딩됨
+- PowerShell 스크립트는 VERSION 파일 읽지만 GUI는 독립적
+- 버전 업데이트 시 여러 파일 수동 수정 필요
+
+**해결책**:
+1. **Python `get_version()` 함수 추가**:
+   ```python
+   def get_version():
+       """VERSION 파일에서 버전 읽기"""
+       try:
+           version_file = Path(__file__).parent / "VERSION"
+           with open(version_file, 'r', encoding='utf-8') as f:
+               return f.read().strip()
+       except Exception as e:
+           logger.warning(f"VERSION 파일 읽기 실패: {e}, 기본 버전 사용")
+           return "1.0.0"
+   ```
+
+2. **GUI 클래스에 버전 통합**:
+   ```python
+   class ProductCollectorGUI:
+       def __init__(self):
+           self.version = get_version()
+           self.root.title(f"네이버 쇼핑 상품 수집기 v{self.version}")
+   ```
+
+3. **자동 반영 위치**:
+   - ✅ PowerShell 터미널: `run_crawler.ps1` 헤더
+   - ✅ GUI 창 타이틀: `네이버 쇼핑 상품 수집기 v{version}`
+   - ✅ GUI 서브타이틀: `13개 필드 완벽 수집 → DB 직접 저장 (v{version})`
+
+**장점**:
+- 단일 진실의 원천: VERSION 파일 하나만 수정
+- 자동 동기화: 모든 UI에 자동 반영
+- 유지보수 용이: 버전 관리 단순화
+
+**코드 위치**:
+- `product_collector_gui.py:36-44` (get_version 함수)
+- `product_collector_gui.py:105-106` (버전 로드)
+- `product_collector_gui.py:117` (GUI 타이틀)
+- `product_collector_gui.py:188` (서브타이틀)
 
 ### ✅ 로그 복사 기능 개선 - 한글 인코딩 검증 (2025-11-03 18:45)
 

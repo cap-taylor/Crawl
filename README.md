@@ -110,30 +110,35 @@ python3 product_collector_gui.py
 
 ```
 Crawl/
-├── product_collector_gui.py    # GUI 메인 파일 ⭐
+├── product_collector_gui.py    # GUI 메인 파일 ⭐ (SimpleCrawler 기반)
+├── product_collector_multi_gui.py # 멀티 카테고리 GUI (백업)
+├── run_crawler.ps1              # PowerShell 실행 스크립트 ⭐
 ├── requirements.txt             # Python 패키지 목록
+├── VERSION                      # 버전 정보 (1.2.3)
 ├── .env.example                 # 환경 변수 템플릿
 ├── README.md                    # 이 파일
 │
-├── scripts/
-│   ├── setup.bat                # Windows 초기 설정 스크립트
-│   └── run_gui.bat              # Windows GUI 실행 스크립트
-│
 ├── src/
+│   ├── core/
+│   │   ├── simple_crawler.py    # SimpleCrawler (v1.2.3) ⭐⭐⭐
+│   │   ├── product_crawler.py   # 이전 크롤러 (백업)
+│   │   └── product_crawler_v2.py # 이전 크롤러 v2 (백업)
 │   ├── database/
 │   │   └── db_connector.py      # PostgreSQL 연결 및 저장
 │   └── utils/
 │       └── config.py            # 프로젝트 설정
 │
 ├── tests/
-│   └── test_womens_manual_captcha.py  # 크롤러 핵심 로직
+│   └── test_simplified.py       # 간단한 테스트
 │
 ├── data/                        # 수집된 JSON 파일 저장 폴더
 │
+├── logs/
+│   └── gui_debug.log            # GUI 디버깅 로그
+│
 └── docs/
-    ├── DEPLOYMENT_GUIDE.md      # 배포 가이드 (새 노트북 설치 방법)
-    ├── CRAWLING_LESSONS_LEARNED.md  # 개발 과정 및 시행착오
-    └── AUTOMATION_DESIGN.md     # 자동화 설계 문서
+    ├── PRD.md                   # 제품 요구사항 문서
+    └── CRAWLING_LESSONS_LEARNED.md  # 개발 과정 및 시행착오 ⭐⭐
 ```
 
 ---
@@ -161,11 +166,15 @@ Crawl/
 - 모든 필드(가격, 리뷰, 검색태그 등) 비교
 - 변경 사항 있으면 업데이트
 
-### 3. 레이어 분리 아키텍처
+### 3. SimpleCrawler 아키텍처 (v1.2.3)
 ```
 GUI Layer (product_collector_gui.py)
     ↓
-Crawler Layer (test_womens_manual_captcha.py)
+SimpleCrawler (src/core/simple_crawler.py)
+    - 13개 필드 수집
+    - DB 직접 저장
+    - 세션 지속성 (1회 연결/종료)
+    - 적응형 대기 시간 (봇 차단 방지)
     ↓
 Database Layer (db_connector.py)
     ↓
@@ -240,22 +249,24 @@ MIT License
 이 프로젝트는 네이버 쇼핑의 상품 정보를 수집하는 도구입니다.
 **크롤링 윤리**를 준수하고, 과도한 요청으로 서버에 부하를 주지 마세요.
 
-**주요 성과 (2025-11-03)**:
-- ✅ 13개 필드 완벽 수집 (100% 일관성)
-- ✅ 봇 탐지 회피 성공 (실제 클릭 방식)
-- ✅ 셀렉터 검증 완료 (13번째, 14번째 상품)
-- ✅ 브랜드명 추출 개선 (테이블에서 정확 추출)
-- ✅ 검색 태그 전체 수집 (10%-100% 스크롤)
+**주요 성과 (v1.2.3 - 2025-10-31)**:
+- ✅ 봇 차단 완전 해결 (적응형 대기 시간 전략, 100% 성공률!)
+- ✅ SimpleCrawler 구조 (13개 필드, DB 직접 저장)
+- ✅ 무한 루프 방지 (URL 세트 비교, 중복 감지)
+- ✅ DB 세션 지속성 (1회 연결/종료)
+- ✅ 크롤링 안정성 대폭 개선
 
-**개발 과정**:
+**개발 마일스톤**:
 - 캡차 자동 해결 실패 → 수동 해결 방식 (2025-09-26)
 - window.open() 봇 탐지 → 실제 클릭 방식 (2025-11-03)
 - 판매자 링크 오류 → 정확한 셀렉터 (2025-11-03)
 - 브랜드명 누락 → 테이블 추출 방식 (2025-11-03)
+- 봇 차단 문제 → 적응형 대기 시간으로 완전 해결 (2025-10-31)
+- 무한 루프 버그 → URL 세트 비교로 해결 (2025-10-31)
 
 **상세 기록**: [docs/CRAWLING_LESSONS_LEARNED.md](docs/CRAWLING_LESSONS_LEARNED.md)
 
 ---
 
-**버전**: 1.1.0
+**버전**: 1.2.3
 **최종 업데이트**: 2025-11-03

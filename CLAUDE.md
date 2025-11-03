@@ -1,5 +1,5 @@
 # 🎯 Crawl 프로젝트 - Claude 필수 지침
-> Last Updated: 2025-11-03 17:25
+> Last Updated: 2025-11-03 20:22
 
 
 ## 🔴 **절대 금지 (NEVER DO THIS)**
@@ -127,7 +127,7 @@
 
 1. **VERSION 파일 수정**
    ```bash
-   echo "1.0.2" > VERSION
+   echo "1.2.4" > VERSION
    ```
 
 2. **변경사항 확인**
@@ -135,9 +135,14 @@
    - MINOR: 카테고리 선택, 무한 수집, GUI 업그레이드
    - PATCH: 한글 깨짐, 버그 수정, 문서 업데이트
 
-3. **자동 반영**
-   - `run_crawler.ps1`이 VERSION 파일 읽어서 자동 표시
-   - Git 커밋 메시지에 버전 포함
+3. **자동 반영 위치**
+   - ✅ `run_crawler.ps1` → PowerShell 터미널 헤더
+   - ✅ `product_collector_gui.py` → GUI 창 타이틀, 서브타이틀
+   - ✅ Git 커밋 메시지 (백업 시)
+
+**🔧 구현 방식**:
+- `run_crawler.ps1`: PowerShell `Get-Content` 읽기
+- `product_collector_gui.py`: Python `get_version()` 함수
 
 **📋 전체 버전 히스토리**: `CHANGELOG.md` 참조
 
@@ -159,7 +164,8 @@ C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -ExecutionPolicy Bypas
 **중요:**
 - 바로가기 경로는 고정 (변경하지 말 것!)
 - GUI 업데이트 시 `run_crawler.ps1` 파일만 수정
-- 현재 실행 파일: `product_collector_gui.py` (단일 크롤링 방식)
+- 현재 실행 파일: `product_collector_gui.py` (SimpleCrawler 기반)
+- 핵심 크롤러: `src/core/simple_crawler.py` (13개 필드 수집, DB 직접 저장)
 
 ### PostgreSQL 데이터베이스
 - **데이터베이스명**: naver

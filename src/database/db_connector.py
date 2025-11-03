@@ -281,7 +281,7 @@ class DatabaseConnector:
             )
 
             self.conn.commit()
-            print(f"[DB] 상품 저장 성공: {product_id} (카테고리: {category_name}, 검색태그: {len(search_tags)}개)")
+            # 개별 로그 제거 (50개 단위 테이블로 대체)
             return 'saved'
 
         except Exception as e:

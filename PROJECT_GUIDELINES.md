@@ -9,9 +9,9 @@
   - Windows 경로: `\\wsl.localhost\Ubuntu-22.04\home\dino\MyProjects\Crawl\run_crawler.ps1`
 
 ### 실행 방법
-1. **WSL 터미널** (권장): `python3 main.py`
+1. **WSL 터미널** (권장): `python3 product_collector_gui.py`
 2. **PowerShell**: 프로젝트 루트에서 `pwsh -ExecutionPolicy Bypass -File ./run_crawler.ps1`
-3. **직접 실행**: `python3 /home/dino/MyProjects/Crawl/main.py`
+3. **직접 실행**: `python3 /home/dino/MyProjects/Crawl/product_collector_gui.py`
 
 ## 📁 프로젝트 구조 (절대 준수!)
 
@@ -19,7 +19,8 @@
 **루트(`/home/dino/MyProjects/Crawl/`)에는 아래 파일만 허용됩니다. 절대 다른 파일 생성 금지!**
 
 ### 허용된 루트 파일
-- `main.py` - 메인 실행 파일 (유일한 Python 파일)
+- `product_collector_gui.py` - GUI 메인 실행 파일 (SimpleCrawler 기반)
+- `product_collector_multi_gui.py` - 멀티 카테고리 GUI (백업용)
 - `run_crawler.ps1` - PowerShell 실행 스크립트 (⚠️ 절대 이동 금지)
 - `install_tkinter.ps1` - 설치 스크립트
 - `.env`, `.env.example` - 환경 설정
@@ -37,8 +38,9 @@
 Crawl/
 ├── src/                    # 소스 코드
 │   ├── core/              # 크롤러 핵심 로직
-│   │   ├── crawler.py     # 메인 크롤러
-│   │   └── terminal_crawler.py  # 터미널 모드
+│   │   ├── simple_crawler.py    # SimpleCrawler (v1.2.3)
+│   │   ├── product_crawler.py   # 이전 크롤러 (백업)
+│   │   └── product_crawler_v2.py # 이전 크롤러 v2 (백업)
 │   ├── database/          # DB 연동
 │   ├── gui/               # GUI 컴포넌트
 │   │   ├── main_window.py # Tkinter GUI
@@ -66,7 +68,8 @@ Crawl/
 │   └── create_tables.sql
 ├── logs/                  # 로그 파일
 ├── run_crawler.ps1       # ⚠️ 실행 스크립트 (절대 이동 금지)
-├── main.py              # 진입점 (유일한 루트 Python 파일)
+├── product_collector_gui.py  # GUI 진입점 (SimpleCrawler 기반)
+├── product_collector_multi_gui.py  # 멀티 카테고리 GUI (백업)
 ├── VERSION              # 버전 파일
 ├── CHANGELOG.md         # 변경 이력
 └── .env                 # 환경 변수
@@ -78,7 +81,7 @@ Crawl/
 3. **카테고리 수집기**: `src/utils/category_*.py` 형식으로 생성
 4. **데이터 파일**: `data/` 폴더에만 저장
 5. **임시 파일**: 절대 생성 금지! 필요시 `data/temp/` 사용 후 즉시 삭제
-6. **루트에 Python 파일 생성 절대 금지** (main.py만 예외)
+6. **루트에 Python 파일 생성 최소화** (GUI 진입점만 허용)
 
 ## 🗄️ 데이터베이스 설정
 
@@ -251,13 +254,13 @@ playwright install chromium
 
 ## 📝 버전 관리
 
-- **현재 버전**: 1.1.0
+- **현재 버전**: 1.2.3
 - **버전 규칙**: Semantic Versioning (MAJOR.MINOR.PATCH)
 - **업데이트 시**: VERSION 파일과 CHANGELOG.md 동시 수정
 
-**v1.1.0 주요 변경사항 (2025-11-03)**:
-- ✅ 13개 필드로 확정 (is_sold_out 제거)
-- ✅ 봇 탐지 회피 성공 (실제 클릭 방식)
-- ✅ 셀렉터 100% 일관성 검증
-- ✅ 브랜드명 추출 개선 (테이블 방식)
-- ✅ 검색 태그 전체 수집 (스크롤 최적화)
+**v1.2.3 주요 변경사항 (2025-10-31)**:
+- ✅ 봇 차단 문제 완전 해결 (적응형 대기 시간 전략)
+- ✅ SimpleCrawler 구조 (13개 필드, DB 직접 저장)
+- ✅ DB 세션 지속성 패턴 (1회 연결/종료)
+- ✅ 무한 루프 방지 안전장치
+- ✅ 크롤링 안정성 대폭 개선
