@@ -216,7 +216,7 @@ class SimpleCrawler:
                                 except Exception as e:
                                     print(f"[{idx+1}번] 중복 체크 오류: {str(e)[:30]} - 수집 진행")
 
-                            await product.click()
+                            await product.click(timeout=10000)  # 10초 타임아웃 (기본 30초 → 단축)
                             await asyncio.sleep(3)  # 2초 → 3초 (탭 열림 대기)
 
                             # 새 탭 찾기
@@ -282,22 +282,27 @@ class SimpleCrawler:
 
                     # 배치 처리 완료 → 스크롤하여 다음 배치 로드
                     if batch_end >= current_total:
-                        # 모든 보이는 상품을 처리했으므로 스크롤
-                        print(f"\n[배치 {batch_num}] 완료 → 스크롤하여 다음 {batch_size}개 로드...")
-                        before_scroll = current_total
-                        await page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
-                        await asyncio.sleep(3)  # 로딩 대기
+                        try:
+                            # 모든 보이는 상품을 처리했으므로 스크롤
+                            print(f"\n[배치 {batch_num}] 완료 → 스크롤하여 다음 {batch_size}개 로드...")
+                            before_scroll = current_total
+                            await page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
+                            await asyncio.sleep(3)  # 로딩 대기
 
-                        # 스크롤 후 상품 개수 확인
-                        product_links_after = await page.query_selector_all('a[class*="ProductCard_link"]')
-                        after_scroll = len(product_links_after)
+                            # 스크롤 후 상품 개수 확인
+                            product_links_after = await page.query_selector_all('a[class*="ProductCard_link"]')
+                            after_scroll = len(product_links_after)
 
-                        scroll_count += 1
+                            scroll_count += 1
 
-                        if after_scroll > before_scroll:
-                            print(f"[스크롤 #{scroll_count}] {before_scroll}개 → {after_scroll}개 (새로 로드: {after_scroll - before_scroll}개)")
-                        else:
-                            print(f"\n더 이상 새 상품이 로드되지 않습니다. 수집 종료.")
+                            if after_scroll > before_scroll:
+                                print(f"[스크롤 #{scroll_count}] {before_scroll}개 → {after_scroll}개 (새로 로드: {after_scroll - before_scroll}개)")
+                            else:
+                                print(f"\n더 이상 새 상품이 로드되지 않습니다. 수집 종료.")
+                                break
+                        except Exception as e:
+                            print(f"\n[배치 {batch_num}] 스크롤 실패: {str(e)[:50]}")
+                            print(f"브라우저/페이지가 닫혔거나 네트워크 오류 발생. 수집 종료.")
                             break
                     else:
                         # 아직 처리할 상품이 남음 (스크롤 불필요)
