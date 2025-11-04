@@ -16,9 +16,9 @@ Write-Host "================================================" -ForegroundColor C
 Write-Host "   Naver Shopping Crawler v$version" -ForegroundColor Green
 Write-Host "================================================" -ForegroundColor Cyan
 Write-Host ""
-Write-Host "[DEBUG MODE] Terminal stays open for error tracking" -ForegroundColor Yellow
-Write-Host "  - GUI errors will appear below with full stack trace" -ForegroundColor Gray
-Write-Host "  - Crawler status and logs visible in real-time" -ForegroundColor Gray
+Write-Host "[DEBUG MODE] Terminal shows only errors" -ForegroundColor Yellow
+Write-Host "  - GUI crash errors will appear below" -ForegroundColor Gray
+Write-Host "  - All crawler logs are in the GUI window" -ForegroundColor Gray
 Write-Host "  - Log file: gui_debug.log" -ForegroundColor Gray
 Write-Host ""
 
@@ -29,9 +29,9 @@ Write-Host "Starting GUI..." -ForegroundColor Green
 Write-Host "================================================" -ForegroundColor Cyan
 Write-Host ""
 
-# GUI 실행 (오류 캡처)
+# GUI 실행 (stderr만 캡처, stdout은 숨김)
 try {
-    wsl bash -c "cd /home/dino/MyProjects/Crawl && export DISPLAY=:0 && export PYTHONIOENCODING=utf-8 && export LANG=ko_KR.UTF-8 && python3 product_collector_gui.py 2>&1"
+    wsl bash -c "cd /home/dino/MyProjects/Crawl && export DISPLAY=:0 && export PYTHONIOENCODING=utf-8 && export LANG=ko_KR.UTF-8 && python3 product_collector_gui.py 2>&1 > /dev/null"
 
     # Normal exit
     Write-Host ""

@@ -97,24 +97,35 @@ class SimpleCrawler:
 
                 # 2. 카테고리 진입 (CRAWLING_LESSONS_LEARNED.md 검증된 방법)
                 print(f"[3/4] '{self.category_name}' 카테고리 진입...")
-                category_btn = await page.wait_for_selector('button:has-text("카테고리")')
+                category_btn = await page.wait_for_selector('button:has-text("카테고리")', timeout=10000)
                 await category_btn.click()
-                await asyncio.sleep(2)  # 메뉴 열리기 대기
+
+                # 카테고리 메뉴가 나타날 때까지 대기 (최대 5초)
+                await asyncio.sleep(1)
 
                 # 우선순위별 셀렉터 fallback (문서 1293-1296줄)
                 category_elem = None
 
-                # 1순위: ID 기반 (⭐⭐⭐⭐⭐)
+                # 1순위: ID 기반 (⭐⭐⭐⭐⭐) - 명시적 대기
                 if self.category_id:
-                    category_elem = await page.query_selector(f'#cat_layer_item_{self.category_id}')
+                    try:
+                        category_elem = await page.wait_for_selector(f'#cat_layer_item_{self.category_id}', timeout=5000)
+                    except:
+                        pass
 
                 # 2순위: data-id 속성 (⭐⭐⭐⭐)
                 if not category_elem and self.category_id:
-                    category_elem = await page.query_selector(f'[data-id="{self.category_id}"]')
+                    try:
+                        category_elem = await page.wait_for_selector(f'[data-id="{self.category_id}"]', timeout=3000)
+                    except:
+                        pass
 
                 # 3순위: data-name 속성 (⭐⭐⭐)
                 if not category_elem:
-                    category_elem = await page.query_selector(f'a[data-name="{self.category_name}"]')
+                    try:
+                        category_elem = await page.wait_for_selector(f'a[data-name="{self.category_name}"]', timeout=3000)
+                    except:
+                        pass
 
                 if not category_elem:
                     raise Exception(f"카테고리 '{self.category_name}' (ID: {self.category_id})를 찾을 수 없습니다")
@@ -122,16 +133,82 @@ class SimpleCrawler:
                 await category_elem.click()
                 await asyncio.sleep(3)
 
-                # 캡차 대기 (15초 고정)
+                # 캡차 체크 및 자동 포커스
                 print("\n" + "="*60)
-                print("[!] 캡차 확인 - 15초 대기")
+                print("[!] 캡차 확인 중...")
                 print("="*60)
-                print("브라우저에서 캡차를 수동으로 해결해주세요")
-                print("="*60)
-                for i in range(15, 0, -5):
-                    print(f"[대기] 남은 시간: {i}초...")
+
+                # 캡차 입력 필드 찾기 (네이버 캡차 input 셀렉터)
+                captcha_input = None
+                try:
+                    # 캡차 입력 필드가 있는지 확인 (1초 대기)
+                    # 실제 테스트로 확인된 셀렉터: input#rcpt_answer, input[name='captcha']
+                    captcha_input = await page.wait_for_selector(
+                        'input#rcpt_answer, input[name="captcha"], input.input_text',
+                        timeout=1000,
+                        state='visible'
+                    )
+                except:
+                    # 캡차가 없으면 넘어감
+                    pass
+
+                if captcha_input:
+                    # 캡차가 있으면 입력 필드에 포커스
+                    print("🔔 캡차 감지! 입력 필드에 포커스를 맞췄습니다.")
+                    print("브라우저에서 캡차를 입력하고 Enter를 누르세요")
+                    print("="*60)
+
+                    # 입력 필드에 포커스 및 하이라이트
+                    await captcha_input.focus()
+                    await captcha_input.click()
+
+                    # 입력 필드를 노란색으로 하이라이트 (시각적 피드백)
+                    await page.evaluate("""
+                        (element) => {
+                            element.style.border = '3px solid #FFD700';
+                            element.style.boxShadow = '0 0 10px #FFD700';
+                            element.style.animation = 'pulse 1s infinite';
+
+                            // 애니메이션 추가
+                            if (!document.getElementById('captcha-pulse-style')) {
+                                const style = document.createElement('style');
+                                style.id = 'captcha-pulse-style';
+                                style.innerHTML = `
+                                    @keyframes pulse {
+                                        0% { box-shadow: 0 0 10px #FFD700; }
+                                        50% { box-shadow: 0 0 20px #FFD700; }
+                                        100% { box-shadow: 0 0 10px #FFD700; }
+                                    }
+                                `;
+                                document.head.appendChild(style);
+                            }
+                        }
+                    """, captcha_input)
+
+                    # 캡차 해결 대기 (최대 30초)
+                    for i in range(30, 0, -5):
+                        print(f"[대기] 캡차 입력 대기 중... {i}초 남음")
+
+                        # 캡차 입력 필드가 사라졌는지 확인 (실제 셀렉터 사용!)
+                        try:
+                            await page.wait_for_selector(
+                                'input#rcpt_answer, input[name="captcha"], input.input_text',
+                                timeout=1000,
+                                state='hidden'
+                            )
+                            print("[✓] 캡차 해결 완료!")
+                            break
+                        except:
+                            pass
+
+                        await asyncio.sleep(5)
+                else:
+                    # 캡차가 없는 경우 짧게 대기
+                    print("캡차 없음 - 페이지 로딩 대기 (5초)")
                     await asyncio.sleep(5)
+
                 print("[OK] 대기 완료! 크롤링 시작...\n")
+                print("="*60)
                 await asyncio.sleep(2)
 
                 # 3. 무한 스크롤 수집 시작
@@ -168,7 +245,8 @@ class SimpleCrawler:
                     batch_start = len(processed_indices)
                     batch_end = current_total  # 현재 로드된 모든 상품 처리
 
-                    print(f"\n[배치 {batch_num}] 전체 {current_total}개 중 {batch_start+1}~{batch_end}번 처리 ({batch_end - batch_start}개)")
+                    # 🔄 v1.4.2+ 코드 실행 확인
+                    print(f"\n[v1.4.2+] [배치 {batch_num}] 전체 {current_total}개 중 {batch_start+1}~{batch_end}번 처리 ({batch_end - batch_start}개)", flush=True)
 
                     # 이번 배치에서 실제 수집한 개수 추적
                     collected_in_batch = 0
@@ -222,6 +300,10 @@ class SimpleCrawler:
                             # 여기까지 왔다는 것은 실제로 처리할 상품
                             processed_indices.add(idx)
 
+                            # ✅ 클릭 전 요소로 스크롤 (Playwright 자동 스크롤 방지)
+                            await product.scroll_into_view_if_needed()
+                            await asyncio.sleep(0.5)
+
                             await product.click(timeout=10000)
                             await asyncio.sleep(3)
 
@@ -274,32 +356,47 @@ class SimpleCrawler:
 
                             # 탭 닫기
                             await detail_page.close()
-                            await asyncio.sleep(1)
+                            await asyncio.sleep(0.5)
+
+                            # ❌ scrollTo(0, 0) 제거 - 네이버 무한 스크롤 방해
+                            # 탭 닫으면 자동으로 원래 페이지로 돌아오고 스크롤 위치 유지됨
 
                         except Exception as e:
                             print(f"[{idx+1}번] 오류: {str(e)[:50]} - SKIP")
                             continue
 
                     # 목표 개수 도달 시 종료
+                    print(f"[DEBUG] 목표 체크 - product_count={self.product_count}, collected={collected_count}")
                     if self.product_count and collected_count >= self.product_count:
+                        print(f"[DEBUG] 목표 도달로 종료")
                         break
 
+                    print(f"[DEBUG] 중지 플래그 체크 - should_stop={self.should_stop}")
                     if self.should_stop:
+                        print(f"[DEBUG] 사용자 중지 요청으로 종료")
                         break
 
                     # 배치 처리 완료 → 스크롤하여 다음 배치 로드
                     # 조건: 모든 상품 처리 완료 (batch_end >= current_total)
+                    print(f"\n[DEBUG] batch_end={batch_end}, current_total={current_total}, 조건={batch_end >= current_total}")
+
                     if batch_end >= current_total:
                         try:
                             # 배치 완료 상태 출력
                             print(f"\n[배치 {batch_num}] 완료 - 실제 수집: {collected_in_batch}개 (광고/중복 제외)")
-                            print(f"→ 스크롤하여 다음 {batch_size}개 로드...")
+                            print(f"→ 스크롤 시도: 현재 {current_total}개 상품...")
                             before_scroll = current_total
+
+                            # 현재 페이지 스크롤 위치 확인
+                            scroll_pos = await page.evaluate('window.pageYOffset')
+                            doc_height = await page.evaluate('document.body.scrollHeight')
+                            print(f"[DEBUG] 스크롤 전 - 위치: {scroll_pos}px, 문서 높이: {doc_height}px")
 
                             # ✅ 페이지 안정화 대기 (DOM 변경 완료)
                             await asyncio.sleep(2)
 
                             # ✅ 부드러운 스크롤 (네이버 무한 스크롤 트리거)
+                            print(f"[DEBUG] 스크롤 명령 실행 중...")
                             await page.evaluate('''
                                 window.scrollTo({
                                     top: document.body.scrollHeight,
@@ -307,25 +404,34 @@ class SimpleCrawler:
                                 });
                             ''')
 
+                            # 스크롤 후 위치 확인
+                            await asyncio.sleep(1)
+                            scroll_pos_after = await page.evaluate('window.pageYOffset')
+                            print(f"[DEBUG] 스크롤 후 - 위치: {scroll_pos_after}px")
+
                             # 재시도 로직: 최대 3번까지 확인 (각 5초 대기)
                             loaded = False
                             for attempt in range(3):
+                                print(f"[DEBUG] 대기 시도 {attempt+1}/3 - {5}초 대기 중...")
                                 await asyncio.sleep(5)  # 5초 대기
 
                                 product_links_after = await page.query_selector_all('a[class*="ProductCard_link"]')
                                 after_scroll = len(product_links_after)
+                                print(f"[DEBUG] 시도 {attempt+1} 결과: {before_scroll}개 → {after_scroll}개")
 
                                 if after_scroll > before_scroll:
                                     scroll_count += 1
                                     increase = after_scroll - before_scroll
-                                    print(f"[스크롤 #{scroll_count}] {before_scroll}개 → {after_scroll}개 (새로 로드: {increase}개)")
+                                    print(f"[스크롤 #{scroll_count}] ✅ 성공! {before_scroll}개 → {after_scroll}개 (새로 로드: {increase}개)")
                                     loaded = True
                                     break
                                 elif attempt < 2:
-                                    print(f"   대기 중... ({(attempt+1)*5}초 경과, 아직 {before_scroll}개)")
+                                    print(f"   ⏳ 대기 중... ({(attempt+1)*5}초 경과, 아직 {before_scroll}개)")
 
                             if not loaded:
-                                print(f"\n더 이상 새 상품이 로드되지 않습니다. 수집 종료.")
+                                print(f"\n❌ 더 이상 새 상품이 로드되지 않습니다.")
+                                print(f"[DEBUG] 최종 - 스크롤 전: {before_scroll}개, 스크롤 후: {after_scroll}개")
+                                print(f"[DEBUG] 종료 원인: 15초 동안 상품 개수 변화 없음")
                                 break
                         except Exception as e:
                             print(f"\n[배치 {batch_num}] 스크롤 실패: {str(e)[:50]}")
@@ -333,7 +439,8 @@ class SimpleCrawler:
                             break
                     else:
                         # 아직 처리할 상품이 남음 (스크롤 불필요)
-                        print(f"[배치 {batch_num}] 처리 완료 - 다음 배치로 진행")
+                        print(f"[DEBUG] 스크롤 불필요 - batch_end({batch_end}) < current_total({current_total})")
+                        print(f"[배치 {batch_num}] 처리 완료 - 다음 배치로 진행 (아직 {current_total - batch_end}개 남음)")
                         continue
 
                 # 최종 테이블 출력 (50의 배수가 아닌 경우)

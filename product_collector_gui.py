@@ -17,6 +17,7 @@ import sys
 import re
 import traceback
 import logging
+import importlib
 
 # 터미널 디버깅 로거 설정
 logging.basicConfig(
@@ -29,9 +30,35 @@ logging.basicConfig(
 )
 logger = logging.getLogger('GUI')
 
-# SimpleCrawler import
-sys.path.append(str(Path(__file__).parent))
+# SimpleCrawler import (강제 reload로 캐시 문제 해결)
+sys.path.insert(0, str(Path(__file__).parent))  # 최우선 경로로 설정
+
+# 🔄 모든 관련 모듈 완전 삭제 (더 공격적으로)
+modules_to_delete = []
+for module_name in sys.modules.keys():
+    if 'src' in module_name or 'simple_crawler' in module_name or 'SimpleCrawler' in module_name:
+        modules_to_delete.append(module_name)
+
+for module_name in modules_to_delete:
+    if module_name in sys.modules:
+        del sys.modules[module_name]
+
+# importlib 캐시 무효화
+import importlib
+importlib.invalidate_caches()
+
+# 직접 import (캐시 우회)
+import src.core.simple_crawler
 from src.core.simple_crawler import SimpleCrawler
+
+# 디버깅: 로드된 모듈 파일 경로와 수정 시간 출력
+import src.core.simple_crawler as _crawler_module
+_crawler_path = Path(_crawler_module.__file__).resolve()
+_mod_time = datetime.fromtimestamp(_crawler_path.stat().st_mtime)
+logger.info(f"[SYSTEM] SimpleCrawler 로드 경로: {_crawler_path}")
+logger.info(f"[SYSTEM] 파일 수정 시간: {_mod_time}")
+logger.info(f"[SYSTEM] 현재 시간: {datetime.now()}")
+logger.info(f"[SYSTEM] 경과 시간: {(datetime.now() - _mod_time).total_seconds():.0f}초 전 수정됨")
 
 
 def get_version():
@@ -106,6 +133,9 @@ class ProductCollectorGUI:
         # 버전 로드
         self.version = get_version()
 
+        # 우클릭 메뉴 추적 변수
+        self.current_menu = None
+
         logger.info("=" * 70)
         logger.info(f"GUI 초기화 시작 (v{self.version})")
         logger.info("=" * 70)
@@ -125,15 +155,8 @@ class ProductCollectorGUI:
         window_width = 900
         window_height = 750
 
-        # 화면 크기 가져오기
-        screen_width = self.root.winfo_screenwidth()
-        screen_height = self.root.winfo_screenheight()
-
-        # 중앙 위치 계산
-        x = (screen_width // 2) - (window_width // 2)
-        y = (screen_height // 2) - (window_height // 2)
-
-        self.root.geometry(f"{window_width}x{window_height}+{x}+{y}")
+        # 창 크기만 설정 (위치는 시스템 기본값 사용)
+        self.root.geometry(f"{window_width}x{window_height}")
         self.root.minsize(800, 650)
 
         ctk.set_appearance_mode("dark")
@@ -719,24 +742,49 @@ class ProductCollectorGUI:
 
     def _show_copy_menu(self, event, text: str, is_multiline: bool = False):
         """우클릭 메뉴 표시 (복사 기능)"""
+        # 이전 메뉴가 열려있으면 먼저 닫기
+        if self.current_menu:
+            try:
+                self.current_menu.unpost()
+                self.current_menu.destroy()
+            except:
+                pass
+            self.current_menu = None
+
+        # 새 메뉴 생성
         menu = tk.Menu(self.root, tearoff=0)
+        self.current_menu = menu
 
         # 복사 함수 (메뉴 자동 닫기 포함)
         def copy_and_close():
             self._copy_to_clipboard(text)
-            menu.unpost()  # 메뉴 닫기
-            menu.destroy()  # 메뉴 파괴
+            if self.current_menu:
+                self.current_menu.unpost()
+                self.current_menu.destroy()
+                self.current_menu = None
 
         if is_multiline:
             menu.add_command(label="전체 복사", command=copy_and_close)
         else:
             menu.add_command(label="복사", command=copy_and_close)
 
-        # 메뉴 표시 (포커스 강탈 없이)
-        menu.tk_popup(event.x_root, event.y_root)
+        # 메뉴 표시
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            # 메뉴 외부 클릭 시 자동 닫기
+            menu.grab_release()
 
-        # 메뉴 외부 클릭 시 자동 닫기
-        menu.bind("<FocusOut>", lambda e: menu.unpost())
+        # 루트 윈도우 클릭 시 메뉴 닫기
+        def close_menu(e=None):
+            if self.current_menu:
+                self.current_menu.unpost()
+                self.current_menu.destroy()
+                self.current_menu = None
+                # 이벤트 바인딩 해제
+                self.root.unbind("<Button-1>", bind_id)
+
+        bind_id = self.root.bind("<Button-1>", close_menu)
 
     def _copy_to_clipboard(self, text: str):
         """클립보드에 텍스트 복사"""
@@ -1069,9 +1117,11 @@ DB상태: {status_text}"""
                 def __init__(self, logger):
                     self.logger = logger
                 def write(self, text):
-                    if text.strip():
+                    if text.strip():  # 빈 문자열이 아니면 출력
                         self.logger(text.strip())
                     return len(text)
+                def flush(self):
+                    pass  # flush 메서드 구현 (필수)
 
             # 원본 stdout 백업
             logger.debug("stdout 리다이렉트 설정 중...")
