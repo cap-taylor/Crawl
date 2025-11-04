@@ -470,7 +470,7 @@ class ProductCollectorGUI:
 
         ctk.CTkLabel(
             table_header,
-            text="최근 수집 상품 (최대 10개)",
+            text="최근 수집 상품 (최신순, 최대 10개)",
             font=("Arial", 13, "bold"),
             text_color=self.colors['text_primary']
         ).pack(side="left")
@@ -577,15 +577,11 @@ class ProductCollectorGUI:
         # 최근 10개 초과 시 가장 오래된 것 제거
         if len(self.recent_products) >= 10:
             self.recent_products.pop(0)
-            # 가장 아래 행 제거 (헤더는 children[0])
-            children = self.table_body.winfo_children()[1:]
-            if children:
-                children[-1].destroy()
 
         self.recent_products.append(product_data)
 
-        # 새 행만 추가 (맨 위에 삽입, 전체 다시 그리지 않음)
-        self._add_single_row_at_top(product_data)
+        # 테이블 전체 다시 그리기 (번호 갱신 필요)
+        self._refresh_product_table()
 
     def _add_single_row_at_top(self, product: dict):
         """테이블 맨 위에 새 행 1개만 추가 (아코디언 방식)"""
@@ -759,8 +755,13 @@ class ProductCollectorGUI:
             widget.destroy()
 
         # 최근 상품들을 역순으로 표시 (최신이 위로)
+        # 실제 수집 개수 기반 번호 (예: 100개 수집 시 100, 99, 98, ...)
+        total_collected = self.stats['collected']
+        recent_count = len(self.recent_products)
+
         for i, product in enumerate(reversed(self.recent_products)):
-            row_num = i + 1
+            # 실제 수집 순서 번호 (최신이 가장 큰 번호)
+            row_num = total_collected - i
 
             # 상태에 따른 색상
             status = product.get('_db_status', 'unknown')

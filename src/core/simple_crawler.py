@@ -145,8 +145,8 @@ class SimpleCrawler:
 
                 # 초기 배치 크기 결정 (처음 로드된 개수)
                 initial_links = await page.query_selector_all('a[class*="ProductCard_link"]')
-                batch_size = len(initial_links)  # 처음 나온 개수 기준
-                print(f"\n초기 상품 수: {batch_size}개 → 배치 크기로 사용")
+                batch_size = len(initial_links)
+                print(f"\n초기 상품 수: {len(initial_links)}개 → 배치 크기: {batch_size}개")
 
                 collected_count = 0
                 processed_indices = set()  # 이미 처리한 상품 인덱스 추적
@@ -216,8 +216,8 @@ class SimpleCrawler:
                                 except Exception as e:
                                     print(f"[{idx+1}번] 중복 체크 오류: {str(e)[:30]} - 수집 진행")
 
-                            await product.click(timeout=10000)  # 10초 타임아웃 (기본 30초 → 단축)
-                            await asyncio.sleep(3)  # 2초 → 3초 (탭 열림 대기)
+                            await product.click(timeout=10000)
+                            await asyncio.sleep(3)
 
                             # 새 탭 찾기
                             all_pages = context.pages
@@ -269,11 +269,6 @@ class SimpleCrawler:
                             await detail_page.close()
                             await asyncio.sleep(1)
 
-                            # ✅ 중요: 상품 탭 닫은 후 페이지 위치 복원 (맨 아래로)
-                            # 이유: 상품 클릭 후 돌아오면 페이지가 위로 튕겨서 scrollIntoView가 작동 안 함
-                            await page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
-                            await asyncio.sleep(0.5)  # 스크롤 완료 대기
-
                         except Exception as e:
                             print(f"[{idx+1}번] 오류: {str(e)[:50]} - SKIP")
                             continue
@@ -292,26 +287,35 @@ class SimpleCrawler:
                             print(f"\n[배치 {batch_num}] 완료 → 스크롤하여 다음 {batch_size}개 로드...")
                             before_scroll = current_total
 
-                            # scrollIntoView 방식: 마지막 상품으로 스크롤 (무한 스크롤 트리거)
-                            product_links = await page.query_selector_all('a[class*="ProductCard_link"]')
-                            if product_links:
-                                last_product = product_links[-1]
-                                await last_product.scroll_into_view_if_needed()
-                            else:
-                                # Fallback: 상품이 없으면 기존 방식
-                                await page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
+                            # ✅ 페이지 안정화 대기 (DOM 변경 완료)
+                            await asyncio.sleep(2)
 
-                            await asyncio.sleep(3)  # 로딩 대기
+                            # ✅ 부드러운 스크롤 (네이버 무한 스크롤 트리거)
+                            await page.evaluate('''
+                                window.scrollTo({
+                                    top: document.body.scrollHeight,
+                                    behavior: 'smooth'
+                                });
+                            ''')
 
-                            # 스크롤 후 상품 개수 확인
-                            product_links_after = await page.query_selector_all('a[class*="ProductCard_link"]')
-                            after_scroll = len(product_links_after)
+                            # 재시도 로직: 최대 3번까지 확인 (각 5초 대기)
+                            loaded = False
+                            for attempt in range(3):
+                                await asyncio.sleep(5)  # 5초 대기
 
-                            scroll_count += 1
+                                product_links_after = await page.query_selector_all('a[class*="ProductCard_link"]')
+                                after_scroll = len(product_links_after)
 
-                            if after_scroll > before_scroll:
-                                print(f"[스크롤 #{scroll_count}] {before_scroll}개 → {after_scroll}개 (새로 로드: {after_scroll - before_scroll}개)")
-                            else:
+                                if after_scroll > before_scroll:
+                                    scroll_count += 1
+                                    increase = after_scroll - before_scroll
+                                    print(f"[스크롤 #{scroll_count}] {before_scroll}개 → {after_scroll}개 (새로 로드: {increase}개)")
+                                    loaded = True
+                                    break
+                                elif attempt < 2:
+                                    print(f"   대기 중... ({(attempt+1)*5}초 경과, 아직 {before_scroll}개)")
+
+                            if not loaded:
                                 print(f"\n더 이상 새 상품이 로드되지 않습니다. 수집 종료.")
                                 break
                         except Exception as e:
