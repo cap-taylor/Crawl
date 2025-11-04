@@ -143,21 +143,35 @@ class SimpleCrawler:
                 # 시작 시간 기록
                 self.start_time = time.time()
 
+                # 초기 배치 크기 결정 (처음 로드된 개수)
+                initial_links = await page.query_selector_all('a[class*="ProductCard_link"]')
+                batch_size = len(initial_links)  # 처음 나온 개수 기준
+                print(f"\n초기 상품 수: {batch_size}개 → 배치 크기로 사용")
+
                 collected_count = 0
                 processed_indices = set()  # 이미 처리한 상품 인덱스 추적
                 scroll_count = 0
+                batch_num = 0
                 max_scroll_attempts = 100  # 최대 스크롤 횟수
 
                 while scroll_count < max_scroll_attempts:
                     if self.should_stop:
                         break
 
+                    batch_num += 1
+
                     # 현재 페이지의 모든 상품 링크 가져오기
                     product_links = await page.query_selector_all('a[class*="ProductCard_link"]')
                     current_total = len(product_links)
 
-                    # 새로운 상품만 수집
-                    for idx in range(len(product_links)):
+                    # 이번 배치 범위 계산 (batch_size개씩 처리)
+                    batch_start = len(processed_indices)
+                    batch_end = min(batch_start + batch_size, current_total)
+
+                    print(f"\n[배치 {batch_num}] 전체 {current_total}개 중 {batch_start+1}~{batch_end}번 처리 ({batch_end - batch_start}개)")
+
+                    # 배치 범위 내 상품만 수집
+                    for idx in range(batch_start, batch_end):
                         # 목표 개수 도달 체크
                         if self.product_count and collected_count >= self.product_count:
                             print(f"\n목표 개수 도달! {collected_count}개 수집 완료")
@@ -266,22 +280,29 @@ class SimpleCrawler:
                     if self.should_stop:
                         break
 
-                    # 스크롤하여 새 상품 로드
-                    before_scroll = current_total
-                    await page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
-                    await asyncio.sleep(3)  # 로딩 대기
+                    # 배치 처리 완료 → 스크롤하여 다음 배치 로드
+                    if batch_end >= current_total:
+                        # 모든 보이는 상품을 처리했으므로 스크롤
+                        print(f"\n[배치 {batch_num}] 완료 → 스크롤하여 다음 {batch_size}개 로드...")
+                        before_scroll = current_total
+                        await page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
+                        await asyncio.sleep(3)  # 로딩 대기
 
-                    # 스크롤 후 상품 개수 확인
-                    product_links_after = await page.query_selector_all('a[class*="ProductCard_link"]')
-                    after_scroll = len(product_links_after)
+                        # 스크롤 후 상품 개수 확인
+                        product_links_after = await page.query_selector_all('a[class*="ProductCard_link"]')
+                        after_scroll = len(product_links_after)
 
-                    scroll_count += 1
+                        scroll_count += 1
 
-                    if after_scroll > before_scroll:
-                        print(f"\n[스크롤 #{scroll_count}] {before_scroll}개 → {after_scroll}개 (증가: {after_scroll - before_scroll}개)")
+                        if after_scroll > before_scroll:
+                            print(f"[스크롤 #{scroll_count}] {before_scroll}개 → {after_scroll}개 (새로 로드: {after_scroll - before_scroll}개)")
+                        else:
+                            print(f"\n더 이상 새 상품이 로드되지 않습니다. 수집 종료.")
+                            break
                     else:
-                        print(f"\n더 이상 새 상품이 로드되지 않습니다.")
-                        break
+                        # 아직 처리할 상품이 남음 (스크롤 불필요)
+                        print(f"[배치 {batch_num}] 처리 완료 - 다음 배치로 진행")
+                        continue
 
                 # 최종 테이블 출력 (50의 배수가 아닌 경우)
                 if len(self.products_data) % 50 != 0:

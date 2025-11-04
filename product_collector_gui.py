@@ -112,8 +112,8 @@ class ProductCollectorGUI:
 
         try:
             self.root = ctk.CTk()
-            # self.root.withdraw()  # 창 숨김 제거
-            logger.info("✓ CTk 루트 윈도우 생성 완료")
+            self.root.withdraw()  # 1. 창 숨김 (초기화 중 깜빡임 방지)
+            logger.info("✓ CTk 루트 윈도우 생성 완료 (숨김 상태)")
 
             self.root.title(f"네이버 쇼핑 상품 수집기 v{self.version}")
             logger.info("✓ 윈도우 타이틀 설정 완료")
@@ -124,7 +124,16 @@ class ProductCollectorGUI:
 
         window_width = 900
         window_height = 750
-        self.root.geometry(f"{window_width}x{window_height}+100+50")
+
+        # 화면 크기 가져오기
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+
+        # 중앙 위치 계산
+        x = (screen_width // 2) - (window_width // 2)
+        y = (screen_height // 2) - (window_height // 2)
+
+        self.root.geometry(f"{window_width}x{window_height}+{x}+{y}")
         self.root.minsize(800, 650)
 
         ctk.set_appearance_mode("dark")
@@ -154,15 +163,13 @@ class ProductCollectorGUI:
         self.root.after(100, self._update_logs)
         self.root.after(1000, self._update_stats)
 
-        # 창 표시 (강제)
-        self.root.update_idletasks()
-        self.root.deiconify()
-        self.root.lift()
-        self.root.focus_force()
-        self.root.attributes('-topmost', True)
-        self.root.after(100, lambda: self.root.lift())
-        self.root.after(200, lambda: self.root.focus_force())
-        self.root.after(500, lambda: self.root.attributes('-topmost', False))
+        # 4. 모든 초기화 완료 후 창 표시 (마지막에!)
+        self.root.update_idletasks()  # 레이아웃 계산
+        self.root.deiconify()          # 창 표시
+        self.root.lift()               # 최상단
+        self.root.attributes('-topmost', True)  # 잠시 고정
+        self.root.after(300, lambda: self.root.attributes('-topmost', False))  # 0.3초 후 해제
+        logger.info("✓ GUI 창 표시 완료 (deiconify + lift + topmost)")
 
     def _load_categories(self):
         """카테고리 JSON 파일에서 로드"""

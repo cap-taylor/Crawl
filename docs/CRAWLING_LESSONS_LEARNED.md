@@ -3761,6 +3761,145 @@ wsl --shutdown
 
 ---
 
+## 🪟 GUI 창 표시 문제 - withdraw() 주석 처리 (2025-11-04)
+
+### 문제 상황
+**증상**:
+- 터미널만 표시되고 GUI 창이 나타나지 않음
+- 작업 표시줄에도 GUI 아이콘 없음
+- 로그는 정상적으로 "GUI 창 표시 완료" 출력
+- 다른 GUI가 실행 중이어서 `wsl --shutdown` 사용 불가
+
+**발생 시점**: 2025-11-04 08:56
+
+**환경**:
+- customtkinter: 5.1.3 (정상 버전)
+- WSL2 Ubuntu 22.04
+- Windows 11
+
+### 원인 분석
+
+#### 코드 검토
+`product_collector_gui.py` 115번 줄:
+```python
+# self.root.withdraw()  # 창 숨김 제거
+```
+
+**문제**: withdraw()가 주석 처리되어 있음
+
+**기대 동작** (문서화된 패턴):
+1. `withdraw()` - 창 숨김 (초기화 중 깜빡임 방지)
+2. 제목, 크기, 위치 설정
+3. 위젯 생성
+4. `deiconify()` - 창 표시
+
+**실제 동작**:
+1. ~~withdraw()~~ - **생략됨**
+2. 제목, 크기, 위치 설정
+3. 위젯 생성
+4. `deiconify()` - 이미 표시된 창을 다시 표시 시도 → WSLg 혼란
+
+### 해결 방법
+
+#### 1. withdraw() 주석 해제
+```python
+# ❌ 잘못된 코드 (문제 발생)
+self.root = ctk.CTk()
+# self.root.withdraw()  # 창 숨김 제거
+logger.info("✓ CTk 루트 윈도우 생성 완료")
+
+# ✅ 올바른 코드 (해결)
+self.root = ctk.CTk()
+self.root.withdraw()  # 1. 창 숨김 (초기화 중 깜빡임 방지)
+logger.info("✓ CTk 루트 윈도우 생성 완료 (숨김 상태)")
+```
+
+#### 2. deiconify() 시퀀스 정리
+```python
+# 4. 모든 초기화 완료 후 창 표시 (마지막에!)
+self.root.update_idletasks()  # 레이아웃 계산
+self.root.deiconify()          # 창 표시
+self.root.lift()               # 최상단
+self.root.attributes('-topmost', True)  # 잠시 고정
+self.root.after(300, lambda: self.root.attributes('-topmost', False))  # 0.3초 후 해제
+logger.info("✓ GUI 창 표시 완료 (deiconify + lift + topmost)")
+```
+
+#### 3. 중복 코드 제거
+139-143번 줄의 중복된 `lift()`, `focus_force()`, `topmost` 제거
+
+### 결과
+✅ **즉시 해결** - WSL shutdown 없이 코드 수정만으로 GUI 창 정상 표시
+- 첫 실행: 10초 후 창 표시 (WSLg 캐시 영향)
+- 두 번째 실행: 즉시 창 표시 (정상 동작)
+
+### 교훈
+
+#### 1. 문서화된 패턴을 절대 변경하지 말 것
+**CRAWLING_LESSONS_LEARNED.md**에 이미 검증된 패턴이 있다면:
+- ✅ 정확히 그대로 따르기
+- ❌ "최적화"라고 생각해서 단계 생략 금지
+- ❌ 주석 처리나 순서 변경 금지
+
+#### 2. withdraw/deiconify 패턴의 중요성
+```python
+# 이 순서는 customtkinter + WSLg 조합에서 필수!
+withdraw() → 설정 → 위젯 생성 → deiconify()
+```
+
+**이유**:
+- customtkinter는 초기화 중 여러 레이아웃 계산 수행
+- WSLg는 창 상태 변화를 캐시
+- withdraw 없이 설정하면 WSLg가 중간 상태를 캐시 → 혼란
+
+#### 3. 증상이 같아도 원인이 다를 수 있음
+**2025-10-31 이슈**: customtkinter 5.2.0 버전 문제 → 다운그레이드 + WSL shutdown
+**2025-11-04 이슈**: withdraw() 주석 처리 → 코드 수정만으로 해결
+
+#### 4. 디버깅 순서
+1. **문서 먼저 확인**: `CRAWLING_LESSONS_LEARNED.md` 검색
+2. **패턴 비교**: 검증된 패턴과 현재 코드 비교
+3. **차이점 찾기**: 주석, 순서, 누락된 단계 확인
+4. **정확히 복원**: 검증된 패턴 그대로 적용
+
+### 빠른 해결 가이드
+
+GUI 창이 안 보이고 터미널만 있을 때:
+
+**1. 버전 확인**
+```bash
+pip3 list | grep customtkinter
+```
+→ 5.1.3이 아니면 다운그레이드 + WSL shutdown 필요
+
+**2. 코드 패턴 확인**
+```bash
+grep -n "withdraw" product_collector_gui.py
+```
+→ 주석 처리(`#`)되어 있으면 주석 제거
+
+**3. 올바른 패턴**
+```python
+self.root = ctk.CTk()
+self.root.withdraw()  # 반드시 필요!
+# ... 설정 및 위젯 생성 ...
+self.root.deiconify()  # 마지막에 표시
+```
+
+**4. 코드 수정 후 바로 재실행**
+→ WSL shutdown 없이 즉시 적용됨
+
+### 관련 파일
+- GUI 코드: [product_collector_gui.py:115](product_collector_gui.py#L115) (withdraw)
+- GUI 코드: [product_collector_gui.py:166-172](product_collector_gui.py#L166-L172) (deiconify)
+- 검증된 패턴: [CRAWLING_LESSONS_LEARNED.md:3612-3632](CRAWLING_LESSONS_LEARNED.md#L3612-L3632)
+
+### 소요 시간
+- 문제 발견 → 해결: ~5분
+- 주요 시간 소모: 문서에서 검증된 패턴 찾기
+
+---
+
 ## 🎯 상품 링크 vs 판매자 링크 구분 문제 (2025-11-03)
 
 ### 문제: 판매자 스토어 페이지로 이동하는 오류
@@ -3853,5 +3992,245 @@ products = await page.query_selector_all('a[class*="ProductCard_link"]')
 ### 소요 시간
 - 문제 발견 → 해결: ~20분
 - 링크 분석 스크립트 작성으로 신속한 해결
+
+---
+
+## 🔄 무한 스크롤 로직 오류 - 98개에서 멈춤 (2025-11-04)
+
+### 문제 상황
+**증상**:
+- 남성의류 카테고리 수집 시 98개에서 중단
+- 무한 수집 모드인데 더 이상 수집하지 않음
+- 로그: "더 이상 새 상품이 로드되지 않습니다. 수집 종료."
+- 실제로는 스크롤하면 계속 상품이 나오는데 수집 안 함
+
+**발생 시점**: 2025-11-04 (v1.2.7)
+
+**사용자 설명**:
+> "스크롤 내릴수록 계속 상품이 나와. 처음 카테고리 진입하면 60개가 넘게 나오고, 스크롤은 그 처음 나온 개수만큼만 내려서 상품들 비슷하게 나오게 한 후에 또 수집하고 또 스크롤 내려서 또 나오는 정보를 또 수집하고. 이렇게 반복하면 무한 수집 가능하거든? 너가 이걸 제대로 수행 못하게 구현했어."
+
+### 원인 분석
+
+#### 잘못된 로직 (v1.2.7 이전)
+```python
+# ❌ 문제 코드
+while True:
+    # 1. 모든 visible 상품 수집 (0~98번)
+    for idx in range(len(product_links)):
+        if idx in processed_indices:
+            continue
+        # ... 수집 ...
+        processed_indices.add(idx)
+
+    # 2. 스크롤
+    await page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
+    await asyncio.sleep(3)
+
+    # 3. 새 상품 확인
+    product_links_after = await page.query_selector_all('a[class*="ProductCard_link"]')
+    if len(product_links_after) <= len(product_links):
+        print("더 이상 새 상품이 로드되지 않습니다. 수집 종료.")
+        break  # ← 여기서 멈춤!
+```
+
+**문제점**:
+1. 처음에 모든 visible 상품(0~98번)을 다 수집
+2. 그 다음 스크롤 1회
+3. 새 상품이 안 로드되면 종료
+4. **배치 개념 없음** - 처음 나온 개수(~60개)만큼만 처리 후 스크롤해야 하는데, 전체를 다 처리함
+
+#### 사용자 요구사항
+```
+예시: 처음 카테고리 진입 시 60개 로드됨
+
+[배치 1]
+- 15~60번 수집 (첫 14개는 광고)
+- 스크롤 → 60개 더 로드 (총 120개)
+
+[배치 2]
+- 61~120번 수집
+- 스크롤 → 60개 더 로드 (총 180개)
+
+[배치 3]
+- 121~180번 수집
+- 스크롤 → 60개 더 로드 (총 240개)
+
+...무한 반복
+```
+
+**핵심**:
+- **batch_size = 초기 로드된 개수** (동적, 하드코딩 아님!)
+- 배치 크기만큼만 처리 → 스크롤 → 다음 배치 처리
+
+### 해결 방법
+
+#### 1. 초기 배치 크기 결정 (동적)
+```python
+# ✅ 올바른 코드
+# 초기 배치 크기 결정 (처음 로드된 개수)
+initial_links = await page.query_selector_all('a[class*="ProductCard_link"]')
+batch_size = len(initial_links)  # 처음 나온 개수 기준 (예: 60개)
+print(f"\n초기 상품 수: {batch_size}개 → 배치 크기로 사용")
+```
+
+#### 2. 배치 범위 계산
+```python
+batch_num = 0
+processed_indices = set()  # 이미 처리한 인덱스 추적
+
+while scroll_count < max_scroll_attempts:
+    batch_num += 1
+
+    # 현재 페이지의 모든 상품 링크 가져오기
+    product_links = await page.query_selector_all('a[class*="ProductCard_link"]')
+    current_total = len(product_links)
+
+    # 이번 배치 범위 계산 (batch_size개씩 처리)
+    batch_start = len(processed_indices)  # 이미 처리한 개수
+    batch_end = min(batch_start + batch_size, current_total)
+
+    print(f"\n[배치 {batch_num}] 전체 {current_total}개 중 {batch_start+1}~{batch_end}번 처리")
+```
+
+#### 3. 배치 범위 내만 수집
+```python
+# ✅ 올바른 코드 - 배치 범위 내만 처리
+for idx in range(batch_start, batch_end):  # 예: 0~60, 60~120, 120~180
+    if self.product_count and collected_count >= self.product_count:
+        break
+
+    # ... 상품 수집 ...
+    processed_indices.add(idx)
+```
+
+#### 4. 배치 완료 후 조건부 스크롤
+```python
+# 배치 처리 완료 → 스크롤하여 다음 배치 로드
+if batch_end >= current_total:
+    # 모든 보이는 상품을 처리했으므로 스크롤
+    print(f"\n[배치 {batch_num}] 완료 → 스크롤하여 다음 {batch_size}개 로드...")
+    before_scroll = current_total
+    await page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
+    await asyncio.sleep(3)
+
+    # 스크롤 후 상품 개수 확인
+    product_links_after = await page.query_selector_all('a[class*="ProductCard_link"]')
+    after_scroll = len(product_links_after)
+    scroll_count += 1
+
+    if after_scroll > before_scroll:
+        print(f"[스크롤 #{scroll_count}] {before_scroll}개 → {after_scroll}개 (새로 로드: {after_scroll - before_scroll}개)")
+    else:
+        print(f"\n더 이상 새 상품이 로드되지 않습니다. 수집 종료.")
+        break
+else:
+    # 아직 처리할 상품이 남음 (스크롤 불필요)
+    print(f"[배치 {batch_num}] 처리 완료 - 다음 배치로 진행")
+    continue
+```
+
+### 수정된 전체 플로우
+
+```
+1. 초기 로드: 60개 상품 확인 → batch_size = 60
+
+[배치 1]
+- batch_start = 0, batch_end = 60
+- 15~60번 수집 (0~14번은 광고 스킵)
+- batch_end(60) >= current_total(60) → 스크롤!
+- 스크롤 후: 120개로 증가
+
+[배치 2]
+- batch_start = 60, batch_end = 120
+- 61~120번 수집
+- batch_end(120) >= current_total(120) → 스크롤!
+- 스크롤 후: 180개로 증가
+
+[배치 3]
+- batch_start = 120, batch_end = 180
+- 121~180번 수집
+- batch_end(180) >= current_total(180) → 스크롤!
+- 스크롤 후: 180개 그대로 → 종료!
+
+...무한 반복 (새 상품 로드될 때까지)
+```
+
+### 결과
+✅ **무한 수집 정상 동작**:
+- 초기 로드 개수를 동적으로 감지
+- 배치 크기만큼만 처리 후 스크롤
+- 새 상품이 없을 때까지 무한 반복
+
+### 교훈
+
+#### 1. 사용자 설명을 정확히 이해하기
+**사용자**: "처음 나온 개수만큼만 나오게 스크롤 내리라는 말이야"
+→ batch_size를 동적으로 결정해야 함 (하드코딩 금지!)
+
+#### 2. 배치 처리 패턴
+```python
+# ❌ 잘못된 패턴
+전체 수집 → 스크롤 1회 → 종료
+
+# ✅ 올바른 패턴
+배치 수집 → 스크롤 → 배치 수집 → 스크롤 → ... (무한 반복)
+```
+
+#### 3. 종료 조건의 중요성
+```python
+# ❌ 잘못된 종료 조건
+if after_scroll <= before_scroll:
+    break  # 너무 일찍 종료!
+
+# ✅ 올바른 종료 조건
+if batch_end >= current_total:  # 배치 완료 시에만 스크롤
+    await scroll()
+    if after_scroll <= before_scroll:  # 스크롤 후에도 증가 없으면 종료
+        break
+```
+
+#### 4. 동적 vs 하드코딩
+**하드코딩 (❌)**:
+```python
+batch_size = 60  # 항상 60개?
+```
+
+**동적 감지 (✅)**:
+```python
+initial_links = await page.query_selector_all('a[class*="ProductCard_link"]')
+batch_size = len(initial_links)  # 실제 로드된 개수 (카테고리마다 다를 수 있음)
+```
+
+### 예상 로그 출력
+
+```
+초기 상품 수: 60개 → 배치 크기로 사용
+
+[배치 1] 전체 60개 중 15~60번 처리 (46개)
+[15번] ✓ 수집 성공: 상품명...
+...
+[60번] ✓ 수집 성공: 상품명...
+[배치 1] 완료 → 스크롤하여 다음 60개 로드...
+[스크롤 #1] 60개 → 120개 (새로 로드: 60개)
+
+[배치 2] 전체 120개 중 61~120번 처리 (60개)
+[61번] ✓ 수집 성공: 상품명...
+...
+[120번] ✓ 수집 성공: 상품명...
+[배치 2] 완료 → 스크롤하여 다음 60개 로드...
+[스크롤 #2] 120개 → 180개 (새로 로드: 60개)
+
+...무한 반복
+```
+
+### 관련 파일
+- 크롤러 코드: [src/core/simple_crawler.py:146-274](src/core/simple_crawler.py#L146-L274)
+- 배치 크기 결정: [simple_crawler.py:146-149](src/core/simple_crawler.py#L146-L149)
+- 배치 범위 계산: [simple_crawler.py:167-171](src/core/simple_crawler.py#L167-L171)
+- 조건부 스크롤: [simple_crawler.py:253-274](src/core/simple_crawler.py#L253-L274)
+
+### 소요 시간
+- 문제 발견 → 해결: ~15분
+- 주요 시간 소모: 사용자 요구사항 정확히 이해하기
 
 ---
