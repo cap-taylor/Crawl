@@ -749,7 +749,7 @@ class ProductCollectorGUI:
             print(f"[복사 오류] {str(e)}")
 
     def _refresh_product_table(self):
-        """상품 테이블 다시 그리기 (전체 재생성)"""
+        """상품 테이블 다시 그리기 (전체 재생성 - 아코디언 방식)"""
         # 기존 행 제거 (헤더 제외)
         for widget in self.table_body.winfo_children()[1:]:  # 첫 번째는 헤더
             widget.destroy()
@@ -775,15 +775,68 @@ class ProductCollectorGUI:
                 status_text = "ERR"
                 status_color = self.colors['accent_red']
 
-            # 행 프레임
+            # 컨테이너 프레임 (행 + 상세 정보)
+            container_frame = ctk.CTkFrame(self.table_body, fg_color="transparent", corner_radius=0)
+            container_frame.pack(fill="x", pady=1)
+
+            # 행 프레임 (클릭 가능)
             row_bg = self.colors['bg_input'] if i % 2 == 0 else self.colors['bg_dark']
-            row_frame = ctk.CTkFrame(self.table_body, fg_color=row_bg, corner_radius=0)
-            row_frame.pack(fill="x", pady=1)
+            row_frame = ctk.CTkFrame(container_frame, fg_color=row_bg, corner_radius=0)
+            row_frame.pack(fill="x")
+
+            # 상세 정보 프레임 (초기에는 숨김)
+            detail_frame = ctk.CTkFrame(container_frame, fg_color=self.colors['bg_dark'], corner_radius=4)
+            detail_frame.pack_forget()
+
+            # 상세 정보 내용 (전체 스키마)
+            detail_text = f"""상품ID: {product.get('product_id', 'N/A')}
+카테고리: {product.get('category_name', 'N/A')}
+상품명: {product.get('product_name', 'N/A')}
+브랜드: {product.get('brand_name', 'N/A') or '없음'}
+가격: {f"{product.get('price', 0):,}원" if product.get('price') else 'N/A'}
+할인율: {f"{product.get('discount_rate')}%" if product.get('discount_rate') else '없음'}
+평점: {product.get('rating', 'N/A')}
+리뷰수: {product.get('review_count', 0):,}개
+태그: {', '.join(product.get('search_tags', [])) if product.get('search_tags') else '없음'}
+URL: {product.get('product_url', 'N/A')}
+수집시각: {product.get('crawled_at', 'N/A')}
+DB상태: {status_text}"""
+
+            detail_label = ctk.CTkLabel(
+                detail_frame,
+                text=detail_text,
+                font=("Arial", 9),
+                text_color=self.colors['text_secondary'],
+                anchor="w",
+                justify="left"
+            )
+            detail_label.pack(padx=10, pady=5, fill="both")
+
+            # 토글 상태
+            is_expanded = [False]
+
+            # 클릭 이벤트 (아코디언 토글)
+            def toggle_detail(event=None, frame=detail_frame, expanded=is_expanded):
+                if expanded[0]:
+                    frame.pack_forget()
+                    expanded[0] = False
+                else:
+                    frame.pack(fill="x", pady=(0, 2))
+                    expanded[0] = True
+
+            # 우클릭 메뉴 (복사)
+            def show_copy_menu(event, data):
+                menu = tk.Menu(self.root, tearoff=0)
+                menu.add_command(label="복사", command=lambda: self._copy_to_clipboard(data))
+                try:
+                    menu.tk_popup(event.x_root, event.y_root)
+                finally:
+                    menu.grab_release()
 
             # 컬럼 데이터
-            product_name = product.get('product_name', 'N/A')[:30]
+            product_name = (product.get('product_name') or 'N/A')[:30]
             price = f"{product.get('price', 0):,}원" if product.get('price') else "N/A"
-            brand = product.get('brand_name', 'N/A')[:10]
+            brand = (product.get('brand_name') or 'N/A')[:10]
             tag_count = f"{len(product.get('search_tags', []))}개"
 
             row_data = [str(row_num), product_name, price, brand, tag_count, status_text]
@@ -793,14 +846,19 @@ class ProductCollectorGUI:
                          self.colors['text_secondary'], status_color]
 
             for j, (data, width, color) in enumerate(zip(row_data, row_widths, row_colors)):
-                ctk.CTkLabel(
+                label = ctk.CTkLabel(
                     row_frame,
                     text=data,
                     font=("Arial", 9),
                     text_color=color,
                     width=width,
                     anchor="w" if j > 0 else "center"
-                ).pack(side="left", padx=(8 if j == 0 else 4))
+                )
+                label.pack(side="left", padx=(8 if j == 0 else 4))
+
+                # 이벤트 바인딩
+                label.bind("<Button-1>", toggle_detail)  # 좌클릭: 아코디언
+                label.bind("<Button-3>", lambda e, d=detail_text: show_copy_menu(e, d))  # 우클릭: 복사
 
     def _update_logs(self):
         """로그 큐에서 메시지 가져와서 표시"""

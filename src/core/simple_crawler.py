@@ -164,13 +164,16 @@ class SimpleCrawler:
                     product_links = await page.query_selector_all('a[class*="ProductCard_link"]')
                     current_total = len(product_links)
 
-                    # 이번 배치 범위 계산 (batch_size개씩 처리)
+                    # 이번 라운드 범위: 아직 처리하지 않은 모든 상품 처리
                     batch_start = len(processed_indices)
-                    batch_end = min(batch_start + batch_size, current_total)
+                    batch_end = current_total  # 현재 로드된 모든 상품 처리
 
                     print(f"\n[배치 {batch_num}] 전체 {current_total}개 중 {batch_start+1}~{batch_end}번 처리 ({batch_end - batch_start}개)")
 
-                    # 배치 범위 내 상품만 수집
+                    # 이번 배치에서 실제 수집한 개수 추적
+                    collected_in_batch = 0
+
+                    # 현재 로드된 모든 상품 처리 (광고/중복 제외)
                     for idx in range(batch_start, batch_end):
                         # 목표 개수 도달 체크
                         if self.product_count and collected_count >= self.product_count:
@@ -189,13 +192,12 @@ class SimpleCrawler:
                         if idx in processed_indices:
                             continue
 
-                        processed_indices.add(idx)
-
                         try:
                             # 상품 클릭 (매번 새로 쿼리 - DOM 변경 대응)
                             fresh_links = await page.query_selector_all('a[class*="ProductCard_link"]')
                             if idx >= len(fresh_links):
                                 print(f"[{idx+1}번] 상품 인덱스 초과 - SKIP")
+                                processed_indices.add(idx)
                                 continue
 
                             product = fresh_links[idx]
@@ -212,9 +214,13 @@ class SimpleCrawler:
                                         if self.db.is_duplicate_product(product_id, {}):
                                             self.skipped_count += 1
                                             print(f"[{idx+1}번] 이미 DB에 존재 - SKIP (ID: {product_id[:20]}...)")
+                                            processed_indices.add(idx)
                                             continue
                                 except Exception as e:
                                     print(f"[{idx+1}번] 중복 체크 오류: {str(e)[:30]} - 수집 진행")
+
+                            # 여기까지 왔다는 것은 실제로 처리할 상품
+                            processed_indices.add(idx)
 
                             await product.click(timeout=10000)
                             await asyncio.sleep(3)
@@ -235,6 +241,7 @@ class SimpleCrawler:
                             if product_data and product_data.get('product_name'):
                                 self.products_data.append(product_data)
                                 collected_count += 1
+                                collected_in_batch += 1  # 이번 배치에서 수집한 개수
 
                                 # 메모리 최적화: 1000개 초과 시 오래된 데이터 정리 (마지막 500개만 유지)
                                 if len(self.products_data) > 1000:
@@ -281,10 +288,12 @@ class SimpleCrawler:
                         break
 
                     # 배치 처리 완료 → 스크롤하여 다음 배치 로드
+                    # 조건: 모든 상품 처리 완료 (batch_end >= current_total)
                     if batch_end >= current_total:
                         try:
-                            # 모든 보이는 상품을 처리했으므로 스크롤
-                            print(f"\n[배치 {batch_num}] 완료 → 스크롤하여 다음 {batch_size}개 로드...")
+                            # 배치 완료 상태 출력
+                            print(f"\n[배치 {batch_num}] 완료 - 실제 수집: {collected_in_batch}개 (광고/중복 제외)")
+                            print(f"→ 스크롤하여 다음 {batch_size}개 로드...")
                             before_scroll = current_total
 
                             # ✅ 페이지 안정화 대기 (DOM 변경 완료)
