@@ -5,6 +5,19 @@ All notable changes to Naver Shopping Crawler will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.1] - 2025-11-04
+
+### Fixed
+- 무한 스크롤 버그 완전 해결 (69개에서 멈추던 문제 수정)
+  - 핵심 원인: 상품 탭 닫고 돌아오면 페이지 위치가 클릭했던 상품으로 이동
+  - 결과: scrollIntoView(마지막 상품)이 "이미 화면에 보임" 판단 → 스크롤 안 함
+  - 해결: 매 상품 처리 후 페이지를 맨 아래로 강제 스크롤 (line 243-244)
+  - 효과: 항상 새로운 스크롤 이벤트 발생 → 무한 로딩 정상 작동
+
+### Changed
+- 상품 탭 닫은 후 페이지 위치 복원 로직 추가 (`simple_crawler.py:243-244`)
+- 스크롤 완료 대기 시간 0.5초 추가 (안정성 향상)
+
 ## [1.2.3] - 2025-10-31
 
 ### Fixed

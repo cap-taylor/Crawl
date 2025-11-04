@@ -269,6 +269,11 @@ class SimpleCrawler:
                             await detail_page.close()
                             await asyncio.sleep(1)
 
+                            # ✅ 중요: 상품 탭 닫은 후 페이지 위치 복원 (맨 아래로)
+                            # 이유: 상품 클릭 후 돌아오면 페이지가 위로 튕겨서 scrollIntoView가 작동 안 함
+                            await page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
+                            await asyncio.sleep(0.5)  # 스크롤 완료 대기
+
                         except Exception as e:
                             print(f"[{idx+1}번] 오류: {str(e)[:50]} - SKIP")
                             continue
@@ -286,7 +291,16 @@ class SimpleCrawler:
                             # 모든 보이는 상품을 처리했으므로 스크롤
                             print(f"\n[배치 {batch_num}] 완료 → 스크롤하여 다음 {batch_size}개 로드...")
                             before_scroll = current_total
-                            await page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
+
+                            # scrollIntoView 방식: 마지막 상품으로 스크롤 (무한 스크롤 트리거)
+                            product_links = await page.query_selector_all('a[class*="ProductCard_link"]')
+                            if product_links:
+                                last_product = product_links[-1]
+                                await last_product.scroll_into_view_if_needed()
+                            else:
+                                # Fallback: 상품이 없으면 기존 방식
+                                await page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
+
                             await asyncio.sleep(3)  # 로딩 대기
 
                             # 스크롤 후 상품 개수 확인
