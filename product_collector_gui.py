@@ -742,56 +742,81 @@ class ProductCollectorGUI:
 
     def _show_copy_menu(self, event, text: str, is_multiline: bool = False):
         """우클릭 메뉴 표시 (복사 기능)"""
-        # 이전 메뉴가 열려있으면 먼저 닫기
-        if self.current_menu:
-            try:
-                self.current_menu.unpost()
-                self.current_menu.destroy()
-            except:
-                pass
-            self.current_menu = None
-
-        # 새 메뉴 생성
-        menu = tk.Menu(self.root, tearoff=0)
-        self.current_menu = menu
-
-        # 복사 함수 (메뉴 자동 닫기 포함)
-        def copy_and_close():
-            self._copy_to_clipboard(text)
-            if self.current_menu:
-                self.current_menu.unpost()
-                self.current_menu.destroy()
-                self.current_menu = None
-
-        if is_multiline:
-            menu.add_command(label="전체 복사", command=copy_and_close)
-        else:
-            menu.add_command(label="복사", command=copy_and_close)
-
-        # 메뉴 표시
         try:
-            menu.tk_popup(event.x_root, event.y_root)
-        finally:
-            # 메뉴 외부 클릭 시 자동 닫기
-            menu.grab_release()
-
-        # 루트 윈도우 클릭 시 메뉴 닫기
-        def close_menu(e=None):
+            # 이전 메뉴가 열려있으면 먼저 닫기
             if self.current_menu:
-                self.current_menu.unpost()
-                self.current_menu.destroy()
+                try:
+                    self.current_menu.unpost()
+                    self.current_menu.destroy()
+                except:
+                    pass
                 self.current_menu = None
-                # 이벤트 바인딩 해제
-                self.root.unbind("<Button-1>", bind_id)
 
-        bind_id = self.root.bind("<Button-1>", close_menu)
+            # 새 메뉴 생성
+            menu = tk.Menu(self.root, tearoff=0)
+            self.current_menu = menu
+
+            # 복사 함수 (메뉴 자동 닫기 포함)
+            def copy_and_close():
+                try:
+                    self._copy_to_clipboard(text)
+                except Exception as e:
+                    print(f"[복사 실행 오류] {str(e)}")
+                finally:
+                    # 메뉴 정리
+                    if self.current_menu:
+                        try:
+                            self.current_menu.unpost()
+                            self.current_menu.destroy()
+                        except:
+                            pass
+                        self.current_menu = None
+
+            if is_multiline:
+                menu.add_command(label="전체 복사", command=copy_and_close)
+            else:
+                menu.add_command(label="복사", command=copy_and_close)
+
+            # 메뉴 표시
+            try:
+                menu.tk_popup(event.x_root, event.y_root)
+            except Exception as e:
+                print(f"[메뉴 표시 오류] {str(e)}")
+                return
+            finally:
+                # 메뉴 외부 클릭 시 자동 닫기
+                try:
+                    menu.grab_release()
+                except:
+                    pass
+
+            # 루트 윈도우 클릭 시 메뉴 닫기
+            def close_menu(e=None):
+                if self.current_menu:
+                    try:
+                        self.current_menu.unpost()
+                        self.current_menu.destroy()
+                    except:
+                        pass
+                    self.current_menu = None
+                    # 이벤트 바인딩 해제
+                    try:
+                        self.root.unbind("<Button-1>", bind_id)
+                    except:
+                        pass
+
+            bind_id = self.root.bind("<Button-1>", close_menu)
+        except Exception as e:
+            print(f"[우클릭 메뉴 오류] {str(e)}")
 
     def _copy_to_clipboard(self, text: str):
         """클립보드에 텍스트 복사"""
         try:
             self.root.clipboard_clear()
             self.root.clipboard_append(text)
-            self.root.update()  # 클립보드 업데이트
+            # self.root.update() 제거 - GUI 종료 버그 원인
+            # update_idletasks()만 사용 (더 안전함)
+            self.root.update_idletasks()
             print(f"[복사] 클립보드에 복사됨 ({len(text)}자)")
         except Exception as e:
             print(f"[복사 오류] {str(e)}")

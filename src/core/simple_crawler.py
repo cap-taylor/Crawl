@@ -54,11 +54,16 @@ class SimpleCrawler:
         async with async_playwright() as p:
             browser = await p.firefox.launch(
                 headless=self.headless,
-                slow_mo=300
+                slow_mo=300,
+                args=['--start-maximized']  # 브라우저 최대화로 시작
             )
 
+            # 📌 viewport 설정 설명:
+            # - viewport는 무한 스크롤을 위해 반드시 필요! (no_viewport=True 사용 금지)
+            # - 네이버는 "화면에 보이는 영역"을 감지해서 새 상품을 로드함
+            # - no_viewport=True → 무한 높이 → "이미 다 보임" → 추가 로드 안 함
             context = await browser.new_context(
-                no_viewport=True,
+                viewport={'width': 1920, 'height': 1080},  # 고정 크기 (Intersection Observer 작동용)
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0",
                 locale='ko-KR',
                 timezone_id='Asia/Seoul'
@@ -220,8 +225,29 @@ class SimpleCrawler:
                 # 시작 시간 기록
                 self.start_time = time.time()
 
-                # 초기 배치 크기 결정 (처음 로드된 개수)
+                # 상품 영역 시작점 찾기 (광고/헤더 제외)
+                try:
+                    # 방법 1: #content > div:nth-child(9) 이후 상품들
+                    product_container = await page.query_selector('#content > div:nth-child(9)')
+                    if product_container:
+                        print("[INFO] 상품 영역 시작점 발견: #content > div:nth-child(9)")
+                    else:
+                        # 방법 2: 정렬 버튼 다음 영역
+                        sort_button = await page.query_selector('#product-sort-address-container > div > div > div > button')
+                        if sort_button:
+                            print("[INFO] 정렬 버튼 기준점 발견")
+                except:
+                    print("[INFO] 기본 셀렉터 사용")
+
+                # 초기 배치 크기 결정 (실제 상품만)
+                # 상품 목록을 더 정확하게 선택
                 initial_links = await page.query_selector_all('a[class*="ProductCard_link"]')
+
+                # 광고나 추천 상품 필터링 (상위 6개 이후부터 시작)
+                if len(initial_links) > 6:
+                    # 처음 6개는 잘 작동하니까 유지, 7번째부터 재검증
+                    print(f"[DEBUG] 전체 링크 수: {len(initial_links)}개")
+
                 batch_size = len(initial_links)
                 print(f"\n초기 상품 수: {len(initial_links)}개 → 배치 크기: {batch_size}개")
 
@@ -238,20 +264,83 @@ class SimpleCrawler:
                     batch_num += 1
 
                     # 현재 페이지의 모든 상품 링크 가져오기
-                    product_links = await page.query_selector_all('a[class*="ProductCard_link"]')
+                    # 광고/추천 제외: 정렬 옵션(#product-sort-address-container) 아래 상품만 수집
+
+                    # ✅ 첫 번째 배치에서만 필터링 (이후 스크롤은 추가만)
+                    if batch_num == 1:
+                        try:
+                            print("[필터링] 정렬 옵션 아래 상품만 선택 중...", flush=True)
+
+                            # JavaScript로 필터링 (브라우저 크래시 방지)
+                            filtered_count = await page.evaluate('''() => {
+                                // 1. 정렬 옵션 찾기
+                                const sort = document.querySelector('#product-sort-address-container');
+                                if (!sort) return {total: 0, filtered: 0};
+
+                                const sortY = sort.getBoundingClientRect().bottom;
+
+                                // 2. 모든 상품 링크 찾기
+                                const allLinks = Array.from(document.querySelectorAll('a[class*="ProductCard_link"]'));
+
+                                // 3. 정렬 옵션 아래 상품만 필터링하고 표시
+                                let filteredCount = 0;
+                                allLinks.forEach(link => {
+                                    const rect = link.getBoundingClientRect();
+                                    if (rect.top > sortY) {
+                                        link.setAttribute('data-filtered', 'true');
+                                        filteredCount++;
+                                    } else {
+                                        link.setAttribute('data-filtered', 'false');
+                                    }
+                                });
+
+                                return {total: allLinks.length, filtered: filteredCount};
+                            }''')
+
+                            print(f"[✓] 전체 {filtered_count['total']}개 → 정렬 옵션 아래 {filtered_count['filtered']}개 선택", flush=True)
+
+                            # 필터링된 상품만 가져오기
+                            product_links = await page.query_selector_all('a[data-filtered="true"]')
+
+                            if len(product_links) == 0:
+                                # 필터링 실패 시 전체 사용
+                                print(f"[!] 필터링 실패, 전체 상품 사용", flush=True)
+                                product_links = await page.query_selector_all('a[class*="ProductCard_link"]')
+
+                        except Exception as e:
+                            # 에러 시 기본 셀렉터 사용
+                            print(f"[!] 필터링 오류: {str(e)}", flush=True)
+                            product_links = await page.query_selector_all('a[class*="ProductCard_link"]')
+                    else:
+                        # ✅ v1.5.7+ 두 번째 배치부터도 필터링된 상품만 사용
+                        # 스크롤 후 새로운 상품 필터링
+                        await page.evaluate('''() => {
+                            const sort = document.querySelector('#product-sort-address-container');
+                            if (!sort) return;
+                            const sortY = sort.getBoundingClientRect().bottom;
+                            const allLinks = Array.from(document.querySelectorAll('a[class*="ProductCard_link"]'));
+                            allLinks.forEach(link => {
+                                const rect = link.getBoundingClientRect();
+                                if (rect.top > sortY && !link.hasAttribute('data-filtered')) {
+                                    link.setAttribute('data-filtered', 'true');
+                                }
+                            });
+                        }''')
+                        product_links = await page.query_selector_all('a[data-filtered="true"]')
+
                     current_total = len(product_links)
 
                     # 이번 라운드 범위: 아직 처리하지 않은 모든 상품 처리
                     batch_start = len(processed_indices)
                     batch_end = current_total  # 현재 로드된 모든 상품 처리
 
-                    # 🔄 v1.4.2+ 코드 실행 확인
-                    print(f"\n[v1.4.2+] [배치 {batch_num}] 전체 {current_total}개 중 {batch_start+1}~{batch_end}번 처리 ({batch_end - batch_start}개)", flush=True)
+                    # 🔄 v1.5.7+ 코드 실행 확인
+                    print(f"\n[v1.5.7+] [배치 {batch_num}] 전체 {current_total}개 중 {batch_start+1}~{batch_end}번 처리 ({batch_end - batch_start}개)", flush=True)
 
                     # 이번 배치에서 실제 수집한 개수 추적
                     collected_in_batch = 0
 
-                    # 현재 로드된 모든 상품 처리 (광고/중복 제외)
+                    # 현재 로드된 모든 상품 처리 (필터링으로 광고 이미 제외됨)
                     for idx in range(batch_start, batch_end):
                         # 목표 개수 도달 체크
                         if self.product_count and collected_count >= self.product_count:
@@ -261,18 +350,16 @@ class SimpleCrawler:
                         if self.should_stop:
                             break
 
-                        # 첫 14개 상품 건너뛰기 (광고)
-                        if idx < 14:
-                            processed_indices.add(idx)
-                            continue
+                        # ❌ v1.5.7+ 하드코딩된 "첫 14개 건너뛰기" 제거
+                        # JavaScript 필터링으로 이미 추천순 아래만 선택됨
 
                         # 이미 처리한 상품은 건너뛰기
                         if idx in processed_indices:
                             continue
 
                         try:
-                            # 상품 클릭 (매번 새로 쿼리 - DOM 변경 대응)
-                            fresh_links = await page.query_selector_all('a[class*="ProductCard_link"]')
+                            # ✅ v1.5.7+ 필터링된 상품만 가져오기
+                            fresh_links = await page.query_selector_all('a[data-filtered="true"]')
                             if idx >= len(fresh_links):
                                 print(f"[{idx+1}번] 상품 인덱스 초과 - SKIP")
                                 processed_indices.add(idx)
@@ -395,14 +482,22 @@ class SimpleCrawler:
                             # ✅ 페이지 안정화 대기 (DOM 변경 완료)
                             await asyncio.sleep(2)
 
-                            # ✅ 부드러운 스크롤 (네이버 무한 스크롤 트리거)
+                            # ✅ v1.5.7+ 조금씩만 스크롤 (페이지 재정렬 방지)
                             print(f"[DEBUG] 스크롤 명령 실행 중...")
-                            await page.evaluate('''
-                                window.scrollTo({
-                                    top: document.body.scrollHeight,
-                                    behavior: 'smooth'
-                                });
-                            ''')
+
+                            # 현재 스크롤 위치에서 800px만 더 스크롤 (조금씩!)
+                            scroll_result = await page.evaluate('''() => {
+                                const currentScroll = window.pageYOffset;
+                                const newScroll = currentScroll + 800;  // 조금씩만 스크롤
+                                window.scrollTo(0, newScroll);
+                                return {
+                                    before: currentScroll,
+                                    after: newScroll
+                                };
+                            }''')
+
+                            print(f"[DEBUG] 스크롤 완료: {scroll_result['before']}px → {scroll_result['after']}px (+800px)")
+                            await asyncio.sleep(1.5)
 
                             # 스크롤 후 위치 확인
                             await asyncio.sleep(1)
@@ -429,9 +524,71 @@ class SimpleCrawler:
                                     print(f"   ⏳ 대기 중... ({(attempt+1)*5}초 경과, 아직 {before_scroll}개)")
 
                             if not loaded:
-                                print(f"\n❌ 더 이상 새 상품이 로드되지 않습니다.")
-                                print(f"[DEBUG] 최종 - 스크롤 전: {before_scroll}개, 스크롤 후: {after_scroll}개")
+                                # 상세 디버깅: 왜 멈췄는지 확인
+                                print(f"\n[DEBUG] 상품 로딩 중단 - 원인 분석 중...")
+
+                                # 1. DOM 끝 메시지 확인
+                                no_more_msg = await page.evaluate('''() => {
+                                    const allText = document.body.innerText;
+                                    const patterns = [
+                                        '더 이상 상품이 없습니다',
+                                        '마지막 페이지',
+                                        '검색 결과가 없습니다',
+                                        '상품을 모두 확인',
+                                        'No more products'
+                                    ];
+                                    for (const pattern of patterns) {
+                                        if (allText.includes(pattern)) {
+                                            return pattern;
+                                        }
+                                    }
+                                    return null;
+                                }''')
+                                if no_more_msg:
+                                    print(f"[DEBUG] ✓ 네이버 메시지 발견: '{no_more_msg}'")
+
+                                # 2. 페이징 버튼 확인
+                                try:
+                                    next_button = await page.query_selector('a:has-text("다음"), button:has-text("다음"), a[class*="next"], button[class*="next"]')
+                                    if next_button:
+                                        is_visible = await next_button.is_visible()
+                                        if is_visible:
+                                            print(f"[DEBUG] ✓ '다음' 버튼 발견 - 페이징 UI 존재")
+                                            print(f"[INFO] 페이징 버튼 클릭 시도 중...")
+
+                                            try:
+                                                await next_button.click()
+                                                await asyncio.sleep(3)
+
+                                                # 새 상품이 로드되었는지 확인
+                                                new_products = await page.query_selector_all('a[class*="ProductCard_link"]')
+                                                if len(new_products) > after_scroll:
+                                                    print(f"[INFO] ✓ 페이징 성공! {len(new_products) - after_scroll}개 추가 로드")
+                                                    continue  # 다음 배치로 진행
+                                                else:
+                                                    print(f"[DEBUG] ✗ 페이징 버튼 클릭했지만 새 상품 없음")
+                                            except Exception as e:
+                                                print(f"[DEBUG] ✗ 페이징 버튼 클릭 실패: {str(e)[:50]}")
+                                except:
+                                    pass
+
+                                # 3. 페이지 상태 확인
+                                doc_height = await page.evaluate('document.body.scrollHeight')
+                                current_scroll = await page.evaluate('window.pageYOffset')
+                                viewport_height = await page.evaluate('window.innerHeight')
+
+                                print(f"[DEBUG] 페이지 상태:")
+                                print(f"  - URL: {page.url}")
+                                print(f"  - 문서 높이: {doc_height}px")
+                                print(f"  - 현재 스크롤: {current_scroll}px")
+                                print(f"  - 뷰포트 높이: {viewport_height}px")
+                                print(f"  - 스크롤 끝 도달: {current_scroll + viewport_height >= doc_height - 100}")
+
+                                print(f"\n[DEBUG] 최종 - 스크롤 전: {before_scroll}개, 스크롤 후: {after_scroll}개")
                                 print(f"[DEBUG] 종료 원인: 15초 동안 상품 개수 변화 없음")
+
+                                print(f"\n❌ 더 이상 새 상품이 로드되지 않습니다.")
+                                print(f"💡 원인: 네이버 서버가 추가 상품을 제공하지 않음 (페이지 끝 또는 스크롤 제한)")
                                 break
                         except Exception as e:
                             print(f"\n[배치 {batch_num}] 스크롤 실패: {str(e)[:50]}")
