@@ -283,10 +283,17 @@ class SimpleCrawler:
                                 const allLinks = Array.from(document.querySelectorAll('a[class*="ProductCard_link"]'));
 
                                 // 3. 정렬 옵션 아래 상품만 필터링하고 표시
+                                // ✅ v1.5.8+ "FOR YOU 연관 추천" 섹션 제외 (aria-labelledby 체크)
                                 let filteredCount = 0;
                                 allLinks.forEach(link => {
                                     const rect = link.getBoundingClientRect();
-                                    if (rect.top > sortY) {
+
+                                    // "FOR YOU 연관 추천" 섹션 상품 확인 (aria-labelledby 속성)
+                                    const labelId = link.getAttribute('aria-labelledby') || '';
+                                    const isRecommendation = labelId.includes('related_recommend_product_information');
+
+                                    // 정렬 옵션 아래 + 추천 섹션 아님
+                                    if (rect.top > sortY && !isRecommendation) {
                                         link.setAttribute('data-filtered', 'true');
                                         filteredCount++;
                                     } else {
@@ -313,6 +320,7 @@ class SimpleCrawler:
                             product_links = await page.query_selector_all('a[class*="ProductCard_link"]')
                     else:
                         # ✅ v1.5.7+ 두 번째 배치부터도 필터링된 상품만 사용
+                        # ✅ v1.5.8+ "FOR YOU 연관 추천" 섹션 제외 (aria-labelledby 체크)
                         # 스크롤 후 새로운 상품 필터링
                         await page.evaluate('''() => {
                             const sort = document.querySelector('#product-sort-address-container');
@@ -321,7 +329,13 @@ class SimpleCrawler:
                             const allLinks = Array.from(document.querySelectorAll('a[class*="ProductCard_link"]'));
                             allLinks.forEach(link => {
                                 const rect = link.getBoundingClientRect();
-                                if (rect.top > sortY && !link.hasAttribute('data-filtered')) {
+
+                                // "FOR YOU 연관 추천" 섹션 상품 확인 (aria-labelledby 속성)
+                                const labelId = link.getAttribute('aria-labelledby') || '';
+                                const isRecommendation = labelId.includes('related_recommend_product_information');
+
+                                // 정렬 옵션 아래 + 추천 섹션 아님 + 아직 필터링 안 됨
+                                if (rect.top > sortY && !isRecommendation && !link.hasAttribute('data-filtered')) {
                                     link.setAttribute('data-filtered', 'true');
                                 }
                             });
