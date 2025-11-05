@@ -3,11 +3,130 @@
 > 이 문서는 네이버 쇼핑 크롤링 개발 과정에서 겪은 모든 시행착오와 해결책을 기록합니다.
 > **절대 같은 실수를 반복하지 않기 위한 필수 참고 문서입니다.**
 
-## 📅 최종 업데이트: 2025-11-03 20:51
+## 📅 최종 업데이트: 2025-11-05 15:43
 
 ---
 
-## 🚨 중요 업데이트 (2025-11-03)
+## 🚨 중요 업데이트 (2025-11-05)
+
+### ✅ 상품 수집 순서 개선 + 조금씩 스크롤 (v1.5.7 - 2025-11-05 15:43)
+
+**커밋**: `3c08801`
+
+**문제점 1: 추천순 아래 첫 상품부터 수집 못함**
+- 하드코딩된 "첫 14개 건너뛰기" 로직으로 인해 추천순 아래 첫 번째 상품부터 수집 시작하지 못함
+- 실제로는 3번째 상품부터 수집되는 현상 발생
+- 사용자 명시적 요구: "추천순 아래쪽부터 수집하라고 했을텐데" (추천순 위는 광고 상품)
+
+**문제점 2: 큰 스크롤로 인한 페이지 재정렬**
+- 기존 로직: 큰 스크롤 + wheel 이벤트 → 네이버가 페이지 재정렬 트리거
+- 사용자 피드백: "스크롤을 내리다가 갑자기 페이지 로딩이 일어나. 그건 잘못된거야"
+- 결과: 상품 순서 뒤바뀜, 중복 수집, 누락 발생
+
+**근본 원인 분석**:
+1. **하드코딩된 인덱스 스킵** (`simple_crawler.py:340-343`):
+   ```python
+   # ❌ 잘못된 방식 - 하드코딩된 건너뛰기
+   if idx < 14:  # 첫 14개 건너뛰기
+       continue
+   ```
+   - 추천순 아래 상품 개수는 가변적인데 고정된 14개를 건너뜀
+   - 광고가 14개 미만이면 실제 상품도 건너뛰게 됨
+
+2. **두 번째 배치부터 필터링 미적용** (`simple_crawler.py:314-316`):
+   ```python
+   # ❌ 잘못된 방식 - 첫 배치만 필터링
+   else:
+       product_links = await page.query_selector_all('a[class*="ProductCard_link"]')
+   ```
+   - 첫 번째 배치만 JavaScript 필터링 적용
+   - 두 번째 배치부터는 추천순 위 광고도 포함될 수 있음
+
+3. **fresh_links도 필터링 안 됨** (`simple_crawler.py:351`):
+   ```python
+   # ❌ 잘못된 방식
+   fresh_links = await page.query_selector_all('a[class*="ProductCard_link"]')
+   ```
+   - 중복 제거 후 새 링크 가져올 때도 필터링 없음
+
+**해결책 1: 모든 배치에서 JavaScript 필터링 적용**
+
+코드 위치: `src/core/simple_crawler.py:314-329`
+
+```python
+# ✅ v1.5.7+ 두 번째 배치부터도 필터링된 상품만 사용
+else:
+    # 스크롤 후 새로운 상품 필터링
+    await page.evaluate('''() => {
+        const sort = document.querySelector('#product-sort-address-container');
+        if (!sort) return;
+        const sortY = sort.getBoundingClientRect().bottom;
+        const allLinks = Array.from(document.querySelectorAll('a[class*="ProductCard_link"]'));
+        allLinks.forEach(link => {
+            const rect = link.getBoundingClientRect();
+            if (rect.top > sortY && !link.hasAttribute('data-filtered')) {
+                link.setAttribute('data-filtered', 'true');
+            }
+        });
+    }''')
+    product_links = await page.query_selector_all('a[data-filtered="true"]')
+```
+
+코드 위치: `src/core/simple_crawler.py:353-354`
+
+```python
+# ❌ v1.5.7+ 하드코딩된 "첫 14개 건너뛰기" 제거
+# JavaScript 필터링으로 이미 추천순 아래만 선택됨
+```
+
+코드 위치: `src/core/simple_crawler.py:361-362`
+
+```python
+# ✅ v1.5.7+ 필터링된 상품만 가져오기
+fresh_links = await page.query_selector_all('a[data-filtered="true"]')
+```
+
+**핵심 개선**:
+- `data-filtered="true"` 속성으로 일관된 필터링
+- 모든 배치, 모든 링크 가져오기에서 동일한 셀렉터 사용
+- 추천순 아래 (Y좌표 기준) 상품만 정확히 선택
+
+**해결책 2: 조금씩 스크롤로 페이지 재정렬 방지**
+
+코드 위치: `src/core/simple_crawler.py:474-489`
+
+```python
+# ✅ v1.5.7+ 조금씩만 스크롤 (페이지 재정렬 방지)
+scroll_result = await page.evaluate('''() => {
+    const currentScroll = window.pageYOffset;
+    const newScroll = currentScroll + 800;  // 조금씩만 스크롤
+    window.scrollTo(0, newScroll);
+    return {
+        before: currentScroll,
+        after: newScroll
+    };
+}''')
+```
+
+**개선 효과**:
+- ✅ **추천순 아래 첫 번째 상품부터 정확히 수집** (예: "사과 청송 안동...")
+- ✅ **모든 배치에서 일관된 필터링** (data-filtered 속성 기반)
+- ✅ **상품 순서 유지** (페이지 재정렬 방지)
+- ✅ **중복/누락 방지** (순서가 안 바뀌므로)
+- ✅ **코드 단순화** (하드코딩된 인덱스 제거)
+
+**테스트 결과**:
+- 추천순 정렬 후 첫 번째 상품부터 정확히 수집됨
+- 스크롤 중 페이지 재정렬 발생하지 않음
+- 순서대로 중복 없이 수집 완료
+
+**교훈**:
+- **위치 기반 필터링**: 하드코딩된 인덱스보다 Y좌표 기반 필터링이 안정적
+- **일관된 셀렉터**: 모든 배치에서 동일한 필터링 로직 적용 필수
+- **조금씩 스크롤**: 큰 스크롤은 페이지 재정렬 유발 가능성 있음 (800px 단위가 안전)
+- **data 속성 활용**: JavaScript로 표시한 요소를 Playwright 셀렉터로 찾기 효율적
+
+---
 
 ### ✅ 중복 체크 로직 대폭 개선 (2025-11-03 21:30)
 
