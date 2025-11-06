@@ -4353,3 +4353,215 @@ batch_size = len(initial_links)  # 실제 로드된 개수 (카테고리마다 �
 - 주요 시간 소모: 사용자 요구사항 정확히 이해하기
 
 ---
+
+## ❌ 실패 26: 83번 → 98번 건너뛰기 + 페이지 리로드 무한 루프 (2025-11-05 v1.7.3)
+
+### 문제 상황
+- **증상 1**: 83번까지 정상 수집 → 갑자기 83번에서 멈춤 → 98번으로 뛰어넘음 (15개 건너뜀)
+- **증상 2**: 98번에서 페이지 리로드 발생 → 첫화면으로 돌아감
+- **증상 3**: "여기서 멈춤" 메시지 반복 출력 → 더 이상 수집 안 됨
+- **증상 4**: 로그에 이모지 네모박스(□) 여전히 존재 (v1.7.3 수정했는데도)
+- **증상 5**: 로그 복사 시도 시 GUI 종료됨 (customtkinter 버그)
+- **증상 6**: 로그에 중복 체크가 전혀 표시 안 됨, "오류 0개"만 나옴 (v1.7.3 수정했는데도)
+
+### 스크린샷 증거
+- **172943.png**: 78~83번 "SKIP - 중복" 표시, 83번 이후 멈춤
+- **172909.png**: 21~26번 "SKIP - 중복" (리로드 후 처음부터 재시작)
+
+### 근본 원인 (추정)
+
+#### 1. JavaScript 필터링 vs DOM 순서 불일치
+```javascript
+// simple_crawler.py:393-427 JavaScript 필터링 코드
+const sort = document.querySelector('#product-sort-address-container');
+const sortY = sort.getBoundingClientRect().bottom;
+const allLinks = Array.from(document.querySelectorAll('a[class*="ProductCard_link"]'));
+
+let filteredCount = 0;
+allLinks.forEach(link => {
+    const rect = link.getBoundingClientRect();
+    const labelId = link.getAttribute('aria-labelledby') || '';
+    const isRecommendation = labelId.includes('related_recommend_product_information');
+
+    // "FOR YOU" 제외 + 정렬 옵션 아래만 선택
+    if (rect.top > sortY && !isRecommendation) {
+        link.setAttribute('data-filtered', 'true');
+        filteredCount++;
+    }
+});
+```
+
+**문제점**:
+- `querySelectorAll('a[class*="ProductCard_link"]')`로 모든 상품 가져옴
+- DOM 순서대로 배열에 저장됨
+- 하지만 **화면에 보이는 순서 ≠ DOM 순서** 가능성!
+- 83번까지 수집 후 DOM에서 84~97번이 실제로는 다른 위치에 있었을 수 있음
+
+#### 2. 스크롤 후 DOM 재정렬
+```python
+# simple_crawler.py:926-941 스크롤 코드
+await page.evaluate('''() => {
+    window.scrollTo(0, document.body.scrollHeight);  // 큰 스크롤!
+    window.dispatchEvent(new WheelEvent('wheel', {deltaY: 100}));
+}''')
+```
+
+**문제점**:
+- 큰 스크롤 (`scrollHeight`) → 네이버가 페이지를 재정렬할 수 있음
+- `WheelEvent` 발생 → 무한 스크롤 트리거
+- 재정렬 과정에서 **상품 순서가 바뀔 수 있음**
+- 83번 이후 상품들이 DOM에서 사라졌다가 다른 위치에 다시 나타났을 가능성
+
+#### 3. 3-Strike 룰 미작동
+```python
+# simple_crawler.py:1055-1100 3-Strike 룰 코드
+if consecutive_failures >= 3:
+    print("❌ 진짜 종료: 3회 연속 새 상품 없음")
+    break
+else:
+    # 재필터링 시도
+    print("🔄 재필터링 시도 중...")
+```
+
+**문제점**:
+- 로그에 "연속 실패: 9회 / 3회"까지 출력됨
+- 3회에서 종료 안 되고 9회까지 계속 진행
+- `consecutive_failures >= 3` 조건이 실행되지 않는 버그
+
+#### 4. 이모지 제거 불완전 + 통계 미표시
+```python
+# simple_crawler.py:814-817, 923-926
+print(f"  [OK] 신규 수집: {collected_in_batch}개", flush=True)  # v1.7.3 수정
+print(f"  [--] 중복 Skip: {duplicates_in_batch}개", flush=True)
+```
+
+**문제점 1 - 이모지**:
+- v1.7.3에서 배치 통계와 스크롤 통계만 수정
+- 다른 곳에 이모지가 남아있을 가능성:
+  - 상품 수집 로그 (개별 상품마다)
+  - 에러 메시지
+  - 디버그 로그
+
+**문제점 2 - 통계 미표시**:
+- 로그에 "오류 0개"만 나오고 **중복 체크 통계가 전혀 안 나옴**
+- v1.7.3 코드가 실제로 실행 안 되거나, GUI가 해당 로그를 필터링하거나, 파일 안 읽었을 가능성
+- 가능한 원인:
+  1. **버전 미반영**: GUI가 여전히 v1.7.2 코드 실행 중 (VERSION 파일은 1.7.3인데 코드는 옛날 것)
+  2. **이모지 필터링**: customtkinter가 `[OK]`, `[--]` 같은 브라켓 기호도 필터링
+  3. **print 누락**: 해당 print 문이 조건문 안에 있어서 실행 안 될 가능성
+  4. **flush=True 무시**: GUI가 stdout을 실시간으로 안 읽음
+
+### 추가 조사 필요 사항
+
+#### 1. 전체 이모지 검색
+```bash
+grep -n "[✅❌⚠️🔄⏳🚨📊💾🔍⚡]" src/core/simple_crawler.py
+```
+
+#### 2. consecutive_failures 로직 확인
+```python
+# simple_crawler.py에서 consecutive_failures 증가/리셋 로직 검증
+# - 언제 증가하나?
+# - 언제 리셋되나?
+# - break 조건이 실제로 실행되나?
+```
+
+#### 3. 상품 번호 추적
+- 83번 상품의 실제 product_id는?
+- 98번 상품의 실제 product_id는?
+- 84~97번 상품은 DOM에 존재했나? 아니면 필터링에서 누락?
+
+#### 4. 페이지 리로드 원인
+```python
+# simple_crawler.py:309-352 페이지 리로드 방지 코드
+window.addEventListener('beforeunload', (e) => {
+    e.preventDefault();
+    e.returnValue = '';
+    return '크롤링 진행 중입니다. 페이지를 나가시겠습니까?';
+});
+```
+
+**의문점**:
+- `preventDefault()` 했는데도 리로드가 발생하는 이유는?
+- 네이버가 JavaScript로 강제 리로드를 하는가?
+- 아니면 다른 원인?
+
+### 임시 해결 방법 (시도해볼 것)
+
+#### 1. 조금씩 스크롤로 변경
+```python
+# ❌ 현재 (큰 스크롤)
+await page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
+
+# ✅ 개선 (조금씩 스크롤)
+current_scroll = await page.evaluate('window.pageYOffset')
+await page.evaluate(f'window.scrollTo(0, {current_scroll + 800})')  # 800px씩만
+```
+
+**기대 효과**:
+- 페이지 재정렬 최소화
+- 상품 순서 유지
+- 네이버가 리로드할 이유 없음
+
+#### 2. 필터링 전후 상품 ID 비교
+```python
+# 필터링 전
+before_ids = [link.getAttribute('href') for link in allLinks]
+
+# 필터링 후
+after_ids = [link.getAttribute('href') for link in filtered_links]
+
+# 비교
+missing_ids = set(before_ids) - set(after_ids)
+print(f"필터링 후 사라진 상품: {len(missing_ids)}개")
+```
+
+#### 3. consecutive_failures 로직 강제 종료
+```python
+# simple_crawler.py:1055 이전에 추가
+print(f"\n[DEBUG] consecutive_failures = {consecutive_failures}")
+
+if consecutive_failures >= 3:
+    print(f"\n[강제 종료] 3회 연속 실패 - 크롤링 종료")
+    raise Exception("3-Strike 룰 위반")  # break 대신 강제 종료
+```
+
+#### 4. 전체 이모지 제거
+```bash
+# 정규식으로 모든 이모지 찾아서 ASCII로 변경
+sed -i 's/✅/[OK]/g' src/core/simple_crawler.py
+sed -i 's/❌/[XX]/g' src/core/simple_crawler.py
+sed -i 's/⚠️/[!!]/g' src/core/simple_crawler.py
+# ... 등등
+```
+
+### 교훈 (예상)
+
+#### 1. DOM 순서 ≠ 화면 순서
+- `querySelectorAll()`로 가져온 순서가 화면 순서와 다를 수 있음
+- 특히 무한 스크롤 + lazy loading 환경에서
+
+#### 2. 큰 스크롤은 위험
+- `scrollTo(0, scrollHeight)` → 페이지 전체 재정렬 가능성
+- 조금씩 스크롤 (`+800px`)이 더 안전
+
+#### 3. 이모지는 전부 제거해야
+- 부분적 수정은 불완전
+- 정규식으로 전체 파일 일괄 변경 필요
+
+#### 4. break vs raise Exception
+- `break`는 조용히 실패할 수 있음
+- `raise Exception`으로 명확히 종료 이유 표시
+
+### 다음 단계
+1. 전체 이모지 검색 및 제거
+2. consecutive_failures 로직 디버깅
+3. 조금씩 스크롤로 변경
+4. 테스트 및 로그 수집
+
+### 관련 파일
+- 크롤러: [src/core/simple_crawler.py](src/core/simple_crawler.py)
+- 버전: [VERSION](VERSION) (v1.7.3)
+- 스크린샷: `스크린샷 2025-11-05 172943.png`, `스크린샷 2025-11-05 172909.png`
+
+---

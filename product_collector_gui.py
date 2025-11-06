@@ -584,7 +584,7 @@ class ProductCollectorGUI:
         timestamp = datetime.now().strftime("%H:%M:%S")
 
         # 중요 이벤트만 로그에 표시
-        important_keywords = ["오류", "에러", "실패", "경고", "시작", "완료", "중지", "카테고리", "모드"]
+        important_keywords = ["오류", "에러", "실패", "경고", "시작", "완료", "중지", "카테고리", "모드", "신규", "중복", "Skip", "저장", "누적"]
         is_important = any(keyword in clean_msg for keyword in important_keywords) or clean_msg.startswith("=")
 
         if is_important:
@@ -790,8 +790,21 @@ class ProductCollectorGUI:
                 except:
                     pass
 
-            # 루트 윈도우 클릭 시 메뉴 닫기
+            # 메뉴 외부 클릭 시 닫기 (터미널 영역 제외)
             def close_menu(e=None):
+                # 터미널 텍스트 영역 클릭은 무시 (텍스트 선택 허용)
+                if e:
+                    try:
+                        # CTkTextbox의 내부 tkinter.Text 위젯 확인
+                        if hasattr(self.log_text, '_textbox'):
+                            if e.widget == self.log_text._textbox:
+                                return  # 터미널 클릭은 무시
+                        # log_text 자체 클릭도 무시
+                        if e.widget == self.log_text:
+                            return
+                    except:
+                        pass
+
                 if self.current_menu:
                     try:
                         self.current_menu.unpost()
@@ -810,14 +823,26 @@ class ProductCollectorGUI:
             print(f"[우클릭 메뉴 오류] {str(e)}")
 
     def _copy_to_clipboard(self, text: str):
-        """클립보드에 텍스트 복사"""
+        """클립보드에 텍스트 복사 (WSLg 안전 방식 - xclip 사용)"""
+        import subprocess
         try:
-            self.root.clipboard_clear()
-            self.root.clipboard_append(text)
-            # self.root.update() 제거 - GUI 종료 버그 원인
-            # update_idletasks()만 사용 (더 안전함)
-            self.root.update_idletasks()
-            print(f"[복사] 클립보드에 복사됨 ({len(text)}자)")
+            # 임시 파일에 저장
+            temp_file = "/home/dino/MyProjects/Crawl/temp/clipboard_temp.txt"
+            with open(temp_file, 'w', encoding='utf-8') as f:
+                f.write(text)
+
+            # xclip으로 복사 (Tkinter clipboard 완전 회피)
+            result = subprocess.run(
+                ['xclip', '-selection', 'clipboard', temp_file],
+                timeout=1,
+                check=False,
+                capture_output=True
+            )
+
+            if result.returncode == 0:
+                print(f"[복사] 클립보드에 복사됨 ({len(text)}자)")
+            else:
+                print(f"[복사] 파일 저장됨: {temp_file}")
         except Exception as e:
             print(f"[복사 오류] {str(e)}")
 
@@ -1075,29 +1100,65 @@ DB상태: {status_text}"""
             )
 
     def _copy_logs(self):
-        """로그 내용을 클립보드에 복사"""
+        """로그 내용을 클립보드에 복사 (완전 안전 모드)"""
         try:
-            # 로그 내용 가져오기
-            log_content = self.log_text.get("1.0", "end-1c")
-
-            if not log_content.strip():
-                self._log("복사할 로그가 없습니다")
+            # 로그 내용 가져오기 (안전하게)
+            try:
+                log_content = self.log_text.get("1.0", "end-1c")
+            except Exception as get_error:
+                logger.error(f"로그 텍스트 가져오기 실패: {get_error}")
                 return
 
-            # 클립보드 복사 (다른 GUI와 격리된 안전한 방식)
-            # self.root.update() 사용 금지 - 다른 GUI 이벤트 루프 간섭 방지!
-            self.root.clipboard_clear()
-            self.root.clipboard_append(log_content)
-            # update_idletasks()만 사용 - 현재 GUI만 영향
-            self.root.update_idletasks()
+            if not log_content or not log_content.strip():
+                logger.info("복사할 로그가 없습니다")
+                return
 
-            logger.info(f"로그 복사 성공: {len(log_content)} 문자")
+            # WSLg 안전 방식: 파일 저장 + xclip 사용 (Tkinter clipboard 완전 회피)
+            fallback_path = "/home/dino/MyProjects/Crawl/temp/last_log.txt"
 
-            # 임시 메시지 표시
-            original_text = self.header_status.cget("text")
-            original_color = self.header_status.cget("text_color")
-            self.header_status.configure(text="● 로그 복사 완료!", text_color=self.colors['accent_green'])
-            self.root.after(2000, lambda: self.header_status.configure(text=original_text, text_color=original_color))
+            # 1. 파일로 저장 (항상 실행)
+            with open(fallback_path, 'w', encoding='utf-8') as f:
+                f.write(log_content)
+
+            # 2. xclip으로 클립보드 복사 시도
+            import subprocess
+            try:
+                result = subprocess.run(
+                    ['xclip', '-selection', 'clipboard', fallback_path],
+                    timeout=1,
+                    check=False,
+                    capture_output=True,
+                    text=True
+                )
+
+                if result.returncode == 0:
+                    success_msg = f"로그 복사 완료! ({len(log_content)} 문자)"
+                    logger.info(success_msg)
+                else:
+                    # xclip 실행 실패
+                    logger.warning(f"xclip 실패 (returncode: {result.returncode})")
+                    success_msg = f"로그 파일 저장: temp/last_log.txt"
+
+            except FileNotFoundError:
+                # xclip 없음
+                logger.warning("xclip not installed")
+                success_msg = f"로그 파일 저장: temp/last_log.txt (xclip 없음)"
+
+            except subprocess.TimeoutExpired:
+                # xclip timeout
+                logger.warning("xclip timeout")
+                success_msg = f"로그 파일 저장: temp/last_log.txt (timeout)"
+
+            logger.info(f"로그 저장: {fallback_path}")
+
+            # 임시 메시지 표시 (안전한 방식)
+            try:
+                original_text = self.header_status.cget("text")
+                original_color = self.header_status.cget("text_color")
+                self.header_status.configure(text=f"● {success_msg}", text_color=self.colors['accent_green'])
+                self.root.after(2000, lambda: self.header_status.configure(text=original_text, text_color=original_color))
+            except:
+                pass  # UI 업데이트 실패는 무시
 
         except Exception as e:
             error_msg = f"로그 복사 실패: {str(e)}"

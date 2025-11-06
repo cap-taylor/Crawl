@@ -49,6 +49,9 @@ class SimpleCrawler:
         self.saved_count = 0  # DB 저장 성공
         self.skipped_count = 0  # 중복 스킵
 
+        # Sliding Window 설정 (오버레이 메모리 최적화)
+        self.OVERLAY_WINDOW = 10  # 현재 상품 ±10개만 오버레이 유지
+
     async def crawl(self) -> List[Dict]:
         """크롤링 실행"""
         async with async_playwright() as p:
@@ -88,10 +91,10 @@ class SimpleCrawler:
                 await page.wait_for_load_state('domcontentloaded')
                 await asyncio.sleep(2)
 
-                # 쇼핑 클릭
+                # 쇼핑 클릭 (광고가 가려도 강제 클릭)
                 print("[2/4] 쇼핑 버튼 클릭...")
                 shopping_selector = '#shortcutArea > ul > li:nth-child(4) > a'
-                await page.locator(shopping_selector).click(timeout=10000)
+                await page.locator(shopping_selector).click(timeout=10000, force=True)
                 await asyncio.sleep(2)
 
                 # 새 탭 전환
@@ -256,6 +259,7 @@ class SimpleCrawler:
                 scroll_count = 0
                 batch_num = 0
                 max_scroll_attempts = 100  # 최대 스크롤 횟수
+                consecutive_failures = 0  # 연속 스크롤 실패 횟수 (리로드 복구용)
 
                 while scroll_count < max_scroll_attempts:
                     if self.should_stop:
@@ -266,93 +270,320 @@ class SimpleCrawler:
                     # 현재 페이지의 모든 상품 링크 가져오기
                     # 광고/추천 제외: 정렬 옵션(#product-sort-address-container) 아래 상품만 수집
 
-                    # ✅ 첫 번째 배치에서만 필터링 (이후 스크롤은 추가만)
+                    # [OK] 첫 번째 배치에서만 필터링 (이후 스크롤은 추가만)
                     if batch_num == 1:
                         try:
-                            print("[필터링] 정렬 옵션 아래 상품만 선택 중...", flush=True)
+                            print("\n[페이지 상태 확인] 필터링 전 페이지 안정화 대기 중...", flush=True)
 
-                            # JavaScript로 필터링 (브라우저 크래시 방지)
-                            filtered_count = await page.evaluate('''() => {
-                                // 1. 정렬 옵션 찾기
-                                const sort = document.querySelector('#product-sort-address-container');
-                                if (!sort) return {total: 0, filtered: 0};
+                            # 페이지 상태 확인 (최대 10초 대기)
+                            page_ready = False
+                            for check_attempt in range(10):
+                                page_status = await page.evaluate('''() => {
+                                    const sortContainer = document.querySelector('#product-sort-address-container');
+                                    const productLinks = document.querySelectorAll('a[class*="ProductCard_link"]');
 
-                                const sortY = sort.getBoundingClientRect().bottom;
+                                    return {
+                                        hasSortContainer: !!sortContainer,
+                                        productCount: productLinks.length,
+                                        pageTitle: document.title,
+                                        url: window.location.href
+                                    };
+                                }''')
 
-                                // 2. 모든 상품 링크 찾기
-                                const allLinks = Array.from(document.querySelectorAll('a[class*="ProductCard_link"]'));
+                                print(f"  시도 {check_attempt + 1}/10:", flush=True)
+                                print(f"    정렬 컨테이너: {'✓' if page_status['hasSortContainer'] else '✗'}", flush=True)
+                                print(f"    상품 링크: {page_status['productCount']}개", flush=True)
+                                print(f"    페이지: {page_status['pageTitle'][:50]}", flush=True)
 
-                                // 3. 정렬 옵션 아래 상품만 필터링하고 표시
-                                // ✅ v1.5.8+ "FOR YOU 연관 추천" 섹션 제외 (aria-labelledby 체크)
-                                let filteredCount = 0;
-                                allLinks.forEach(link => {
-                                    const rect = link.getBoundingClientRect();
+                                if page_status['hasSortContainer'] and page_status['productCount'] > 0:
+                                    print(f"  [OK] 페이지 준비 완료!", flush=True)
+                                    page_ready = True
+                                    break
 
-                                    // "FOR YOU 연관 추천" 섹션 상품 확인 (aria-labelledby 속성)
-                                    const labelId = link.getAttribute('aria-labelledby') || '';
-                                    const isRecommendation = labelId.includes('related_recommend_product_information');
+                                await asyncio.sleep(1)
 
-                                    // 정렬 옵션 아래 + 추천 섹션 아님
-                                    if (rect.top > sortY && !isRecommendation) {
-                                        link.setAttribute('data-filtered', 'true');
-                                        filteredCount++;
-                                    } else {
-                                        link.setAttribute('data-filtered', 'false');
-                                    }
+                            if not page_ready:
+                                print(f"\n[!!] 경고: 페이지가 완전히 로드되지 않았습니다!", flush=True)
+                                print(f"  URL: {page_status['url']}", flush=True)
+                                print(f"  계속 진행하되, 문제 발생 가능성 있음", flush=True)
+
+                            # [+] 페이지 리로드 방지 + 감지 시스템 설치
+                            print("\n[리로드 방지] 페이지 새로고침 차단 시스템 설치 중...", flush=True)
+                            await page.evaluate('''() => {
+                                // beforeunload 이벤트로 리로드 방지 시도
+                                window.addEventListener('beforeunload', (e) => {
+                                    console.error('[[!!] 페이지 리로드 시도 감지!] beforeunload 이벤트 발생');
+                                    console.trace('[Stack Trace] 리로드 시도 경로');
+
+                                    // 리로드 방지 (브라우저가 확인 메시지 표시)
+                                    e.preventDefault();
+                                    e.returnValue = '';
+
+                                    return '크롤링 진행 중입니다. 페이지를 나가시겠습니까?';
                                 });
 
-                                return {total: allLinks.length, filtered: filteredCount};
-                            }''')
+                                // URL 변경 감지 (history API)
+                                const originalPushState = history.pushState;
+                                const originalReplaceState = history.replaceState;
 
-                            print(f"[✓] 전체 {filtered_count['total']}개 → 정렬 옵션 아래 {filtered_count['filtered']}개 선택", flush=True)
+                                history.pushState = function(...args) {
+                                    console.warn('[[!!] URL 변경 감지!] pushState:', args[2]);
+                                    return originalPushState.apply(this, arguments);
+                                };
+
+                                history.replaceState = function(...args) {
+                                    console.warn('[[!!] URL 변경 감지!] replaceState:', args[2]);
+                                    return originalReplaceState.apply(this, arguments);
+                                };
+
+                                // 초기 URL 저장
+                                window.__initialURL = window.location.href;
+                                console.log('[리로드 방지] 초기 URL:', window.__initialURL);
+
+                                // 주기적으로 URL 변경 체크
+                                setInterval(() => {
+                                    if (window.location.href !== window.__initialURL) {
+                                        console.error('[[!!] 페이지 리로드 발생!] URL이 변경됨');
+                                        console.error('  이전:', window.__initialURL);
+                                        console.error('  현재:', window.location.href);
+                                        window.__initialURL = window.location.href;
+                                    }
+                                }, 2000);
+                            }''')
+                            print("  [OK] 리로드 방지 시스템 활성화", flush=True)
+
+                            print("\n[필터링] 정렬 옵션 아래 상품만 선택 중...", flush=True)
+
+                            # JavaScript로 필터링 (브라우저 크래시 방지)
+                            print(f"[필터링] 첫 번째 배치 필터링 시작...", flush=True)
+
+                            try:
+                                filtered_count = await page.evaluate('''() => {
+                                    // 1. 정렬 옵션 찾기
+                                    const sort = document.querySelector('#product-sort-address-container');
+                                    if (!sort) return {total: 0, filtered: 0, aboveSort: 0, recommendations: 0, labelPatterns: []};
+
+                                    const sortY = sort.getBoundingClientRect().bottom;
+
+                                    // 2. 모든 상품 링크 찾기
+                                    const allLinks = Array.from(document.querySelectorAll('a[class*="ProductCard_link"]'));
+
+                                    // 3. 정렬 옵션 아래 상품만 필터링하고 표시
+                                    // [OK] v1.5.9+ "FOR YOU 연관 추천" 섹션 제외 (aria-labelledby 체크)
+                                    let filteredCount = 0;
+                                    let aboveSortCount = 0;
+                                    let recommendationCount = 0;
+                                    const labelPatterns = new Set();
+
+                                    allLinks.forEach(link => {
+                                        const rect = link.getBoundingClientRect();
+                                        const labelId = link.getAttribute('aria-labelledby') || '';
+
+                                        // aria-labelledby 패턴 수집 (처음 5개만)
+                                        if (labelId && labelPatterns.size < 5) {
+                                            labelPatterns.add(labelId);
+                                        }
+
+                                        // "FOR YOU 연관 추천" 섹션 상품 확인
+                                        const isRecommendation = labelId.includes('related_recommend_product_information');
+
+                                        if (rect.top <= sortY) {
+                                            // 정렬 옵션 위 (제외)
+                                            aboveSortCount++;
+                                            link.setAttribute('data-filtered', 'false');
+                                        } else if (isRecommendation) {
+                                            // FOR YOU 추천 (제외)
+                                            recommendationCount++;
+                                            link.setAttribute('data-filtered', 'false');
+                                        } else {
+                                            // 정상 상품 (선택)
+                                            link.setAttribute('data-filtered', 'true');
+                                            filteredCount++;
+                                        }
+                                    });
+
+                                    return {
+                                        total: allLinks.length,
+                                        filtered: filteredCount,
+                                        aboveSort: aboveSortCount,
+                                        recommendations: recommendationCount,
+                                        labelPatterns: Array.from(labelPatterns)
+                                    };
+                                }''')
+                                print(f"[DEBUG] evaluate() 성공, 결과 타입: {type(filtered_count)}", flush=True)
+                            except Exception as eval_err:
+                                print(f"[!!] JavaScript evaluate() 실패!", flush=True)
+                                print(f"  에러 타입: {type(eval_err).__name__}", flush=True)
+                                print(f"  에러 메시지: {str(eval_err)[:200]}", flush=True)
+                                # Fallback: 빈 결과 반환
+                                filtered_count = {
+                                    'total': 0,
+                                    'filtered': 0,
+                                    'aboveSort': 0,
+                                    'recommendations': 0,
+                                    'labelPatterns': []
+                                }
+
+                            print(f"[필터링 결과]", flush=True)
+                            print(f"  전체 링크: {filtered_count['total']}개", flush=True)
+                            print(f"  - 정렬 옵션 위: {filtered_count['aboveSort']}개 (제외)", flush=True)
+                            print(f"  - FOR YOU 추천: {filtered_count['recommendations']}개 (제외)", flush=True)
+                            print(f"  - 정상 상품: {filtered_count['filtered']}개 (선택)", flush=True)
+                            if filtered_count['labelPatterns']:
+                                print(f"[셀렉터 패턴] aria-labelledby 예시 (처음 5개):", flush=True)
+                                for pattern in filtered_count['labelPatterns']:
+                                    print(f"  - {pattern}", flush=True)
 
                             # 필터링된 상품만 가져오기
                             product_links = await page.query_selector_all('a[data-filtered="true"]')
 
+                            # v1.7.6 디버그: 필터링된 상품 URL 샘플 출력
+                            if len(product_links) > 0:
+                                sample_urls = await page.evaluate('''() => {
+                                    const links = document.querySelectorAll('a[data-filtered="true"]');
+                                    const samples = [];
+                                    const indices = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90];  // 샘플 인덱스
+                                    indices.forEach(i => {
+                                        if (i < links.length) {
+                                            const url = links[i].href || '';
+                                            const productId = url.match(/nvMid=(\d+)/);
+                                            samples.push({
+                                                index: i,
+                                                productId: productId ? productId[1] : 'N/A'
+                                            });
+                                        }
+                                    });
+                                    return samples;
+                                }''')
+                                print(f"[필터링 샘플] 10개씩 확인:", flush=True)
+                                for sample in sample_urls:
+                                    print(f"  [{sample['index']}번] product_id: {sample['productId']}", flush=True)
+
                             if len(product_links) == 0:
                                 # 필터링 실패 시 전체 사용
-                                print(f"[!] 필터링 실패, 전체 상품 사용", flush=True)
+                                print(f"\n[!!] [필터링 실패] 필터링된 상품이 0개입니다!", flush=True)
+                                print(f"  원인 분석 중...", flush=True)
+
+                                # 페이지 상태 재확인
+                                fallback_status = await page.evaluate('''() => {
+                                    return {
+                                        sortContainer: !!document.querySelector('#product-sort-address-container'),
+                                        allLinks: document.querySelectorAll('a[class*="ProductCard_link"]').length,
+                                        filteredLinks: document.querySelectorAll('a[data-filtered="true"]').length,
+                                        url: window.location.href,
+                                        title: document.title
+                                    };
+                                }''')
+
+                                print(f"  정렬 컨테이너: {'있음' if fallback_status['sortContainer'] else '없음'}", flush=True)
+                                print(f"  전체 상품 링크: {fallback_status['allLinks']}개", flush=True)
+                                print(f"  필터링된 링크: {fallback_status['filteredLinks']}개", flush=True)
+                                print(f"  현재 URL: {fallback_status['url']}", flush=True)
+
+                                # 스크린샷 저장
+                                screenshot_path = f"/home/dino/MyProjects/Crawl/temp/filtering_failed_{batch_num}.png"
+                                await page.screenshot(path=screenshot_path)
+                                print(f"  스크린샷 저장: {screenshot_path}", flush=True)
+
+                                # Fallback: 전체 상품 사용
+                                print(f"\n  → Fallback: 전체 상품 사용 시도...", flush=True)
                                 product_links = await page.query_selector_all('a[class*="ProductCard_link"]')
+                                print(f"  → Fallback 결과: {len(product_links)}개 발견", flush=True)
 
                         except Exception as e:
                             # 에러 시 기본 셀렉터 사용
-                            print(f"[!] 필터링 오류: {str(e)}", flush=True)
+                            print(f"\n[**] [필터링 에러] 예외 발생!", flush=True)
+                            print(f"  에러 타입: {type(e).__name__}", flush=True)
+                            print(f"  에러 메시지: {str(e)[:200]}", flush=True)
+
+                            # 페이지 상태 확인
+                            try:
+                                error_status = await page.evaluate('window.location.href')
+                                print(f"  현재 URL: {error_status}", flush=True)
+                            except:
+                                print(f"  (URL 확인 불가 - 페이지 크래시 가능성)", flush=True)
+
+                            # 스크린샷 저장
+                            try:
+                                screenshot_path = f"/home/dino/MyProjects/Crawl/temp/filtering_error_{batch_num}.png"
+                                await page.screenshot(path=screenshot_path)
+                                print(f"  스크린샷 저장: {screenshot_path}", flush=True)
+                            except:
+                                print(f"  (스크린샷 저장 실패)", flush=True)
+
+                            # Fallback
+                            print(f"\n  → Fallback: 기본 셀렉터 사용...", flush=True)
                             product_links = await page.query_selector_all('a[class*="ProductCard_link"]')
+                            print(f"  → Fallback 결과: {len(product_links)}개 발견", flush=True)
                     else:
-                        # ✅ v1.5.7+ 두 번째 배치부터도 필터링된 상품만 사용
-                        # ✅ v1.5.8+ "FOR YOU 연관 추천" 섹션 제외 (aria-labelledby 체크)
+                        # [OK] v1.5.7+ 두 번째 배치부터도 필터링된 상품만 사용
+                        # [OK] v1.5.9+ "FOR YOU 연관 추천" 섹션 제외 (aria-labelledby 체크)
+                        print(f"\n[필터링] 배치 {batch_num} - 새로운 상품 필터링 중...", flush=True)
+
                         # 스크롤 후 새로운 상품 필터링
-                        await page.evaluate('''() => {
+                        new_filtered = await page.evaluate('''() => {
                             const sort = document.querySelector('#product-sort-address-container');
-                            if (!sort) return;
+                            if (!sort) return {newFiltered: 0, newRecommendations: 0};
+
                             const sortY = sort.getBoundingClientRect().bottom;
                             const allLinks = Array.from(document.querySelectorAll('a[class*="ProductCard_link"]'));
+
+                            let newFilteredCount = 0;
+                            let newRecommendationCount = 0;
+
                             allLinks.forEach(link => {
                                 const rect = link.getBoundingClientRect();
-
-                                // "FOR YOU 연관 추천" 섹션 상품 확인 (aria-labelledby 속성)
                                 const labelId = link.getAttribute('aria-labelledby') || '';
                                 const isRecommendation = labelId.includes('related_recommend_product_information');
 
-                                // 정렬 옵션 아래 + 추천 섹션 아님 + 아직 필터링 안 됨
-                                if (rect.top > sortY && !isRecommendation && !link.hasAttribute('data-filtered')) {
-                                    link.setAttribute('data-filtered', 'true');
+                                // 아직 필터링 안 된 상품만 처리
+                                if (!link.hasAttribute('data-filtered')) {
+                                    if (rect.top > sortY && !isRecommendation) {
+                                        link.setAttribute('data-filtered', 'true');
+                                        newFilteredCount++;
+                                    } else if (isRecommendation) {
+                                        newRecommendationCount++;
+                                    }
                                 }
                             });
+
+                            return {newFiltered: newFilteredCount, newRecommendations: newRecommendationCount};
                         }''')
+
+                        print(f"[필터링 결과] 새로 추가:", flush=True)
+                        print(f"  - 정상 상품: {new_filtered['newFiltered']}개", flush=True)
+                        print(f"  - FOR YOU 추천: {new_filtered['newRecommendations']}개 (제외)", flush=True)
+
                         product_links = await page.query_selector_all('a[data-filtered="true"]')
+                        print(f"  총 필터링된 상품: {len(product_links)}개", flush=True)
 
                     current_total = len(product_links)
 
+                    # v1.7.3 필터링 0개 에러 처리
+                    if current_total == 0:
+                        print(f"\n[!!] [치명적 에러] 필터링된 상품이 0개입니다!", flush=True)
+                        print(f"  배치 번호: {batch_num}", flush=True)
+                        print(f"  원인: 페이지 리로드 또는 필터링 실패", flush=True)
+                        print(f"\n  크롤링을 종료합니다.", flush=True)
+                        break
+
                     # 이번 라운드 범위: 아직 처리하지 않은 모든 상품 처리
-                    batch_start = len(processed_indices)
+                    # [FIX] v1.8.5: len() 대신 max()+1 사용 (중복 skip으로 인한 건너뛰기 방지)
+                    batch_start = max(processed_indices) + 1 if processed_indices else 0
                     batch_end = current_total  # 현재 로드된 모든 상품 처리
 
-                    # 🔄 v1.5.7+ 코드 실행 확인
-                    print(f"\n[v1.5.7+] [배치 {batch_num}] 전체 {current_total}개 중 {batch_start+1}~{batch_end}번 처리 ({batch_end - batch_start}개)", flush=True)
+                    # [>>] v1.8.5+ 디버그 로그 강화
+                    print(f"\n[v1.8.5+] [배치 {batch_num}] 상태", flush=True)
+                    print(f"  처리된 인덱스 개수: {len(processed_indices)}개", flush=True)
+                    print(f"  마지막 처리 인덱스: {max(processed_indices) if processed_indices else -1}번", flush=True)
+                    print(f"  다음 배치 시작: {batch_start}번 (0-based)", flush=True)
+                    print(f"  다음 배치 끝: {batch_end-1}번 (0-based)", flush=True)
+                    print(f"  처리할 상품: {batch_start+1}~{batch_end}번 ({batch_end - batch_start}개)", flush=True)
 
-                    # 이번 배치에서 실제 수집한 개수 추적
-                    collected_in_batch = 0
+                    # 이번 배치 통계 추적
+                    collected_in_batch = 0  # 실제 수집
+                    duplicates_in_batch = 0  # 중복 skip
+                    errors_in_batch = 0  # 오류 skip
 
                     # 현재 로드된 모든 상품 처리 (필터링으로 광고 이미 제외됨)
                     for idx in range(batch_start, batch_end):
@@ -364,7 +595,7 @@ class SimpleCrawler:
                         if self.should_stop:
                             break
 
-                        # ❌ v1.5.7+ 하드코딩된 "첫 14개 건너뛰기" 제거
+                        # [XX] v1.5.7+ 하드코딩된 "첫 14개 건너뛰기" 제거
                         # JavaScript 필터링으로 이미 추천순 아래만 선택됨
 
                         # 이미 처리한 상품은 건너뛰기
@@ -372,7 +603,7 @@ class SimpleCrawler:
                             continue
 
                         try:
-                            # ✅ v1.5.7+ 필터링된 상품만 가져오기
+                            # [OK] v1.5.7+ 필터링된 상품만 가져오기
                             fresh_links = await page.query_selector_all('a[data-filtered="true"]')
                             if idx >= len(fresh_links):
                                 print(f"[{idx+1}번] 상품 인덱스 초과 - SKIP")
@@ -388,22 +619,126 @@ class SimpleCrawler:
                                     product_url = await product.get_attribute('href')
                                     if product_url:
                                         product_id = self.db.extract_product_id(product_url)
+                                        print(f"[{idx+1}번] 중복 체크 중... (ID: {product_id[:30]}...)", flush=True)
 
                                         # DB 중복 체크
                                         if self.db.is_duplicate_product(product_id, {}):
                                             self.skipped_count += 1
-                                            print(f"[{idx+1}번] 이미 DB에 존재 - SKIP (ID: {product_id[:20]}...)")
+                                            duplicates_in_batch += 1  # 배치 중복 카운트
+                                            print(f"  └─> ✓ DB에 이미 존재 - SKIP", flush=True)
+
+                                            # 🧹 Sliding Window: 오래된 오버레이 제거
+                                            if idx > self.OVERLAY_WINDOW:
+                                                old_idx = idx - self.OVERLAY_WINDOW - 1
+                                                await page.evaluate(f'''() => {{
+                                                    const oldOverlay = document.getElementById('product-overlay-{old_idx}');
+                                                    if (oldOverlay) {{
+                                                        oldOverlay.remove();
+                                                    }}
+                                                }}''')
+
+                                            # 회색 테두리 (중복 Skip)
+                                            await page.evaluate(f'''(index) => {{
+                                                const links = document.querySelectorAll('a[data-filtered="true"]');
+                                                const link = links[index];
+                                                if (link) {{
+                                                    link.style.border = '5px solid #888888';
+                                                    link.style.boxShadow = '0 0 20px #888888';
+
+                                                    const overlay = document.createElement('div');
+                                                    overlay.id = 'product-overlay-' + index;
+                                                    overlay.style.cssText = `
+                                                        position: absolute;
+                                                        top: 0;
+                                                        left: 0;
+                                                        background: rgba(136, 136, 136, 0.9);
+                                                        color: white;
+                                                        padding: 10px;
+                                                        font-size: 20px;
+                                                        font-weight: bold;
+                                                        z-index: 10000;
+                                                        pointer-events: none;
+                                                    `;
+                                                    overlay.textContent = '[{idx+1}번] SKIP - 중복';
+                                                    link.appendChild(overlay);
+
+                                                    link.scrollIntoView({{ block: 'center', behavior: 'smooth' }});
+                                                }}
+                                            }}''', idx)
+                                            await asyncio.sleep(0.3)
+
                                             processed_indices.add(idx)
                                             continue
+                                        else:
+                                            print(f"  └─> ✓ 신규 상품 - 수집 진행", flush=True)
                                 except Exception as e:
-                                    print(f"[{idx+1}번] 중복 체크 오류: {str(e)[:30]} - 수집 진행")
+                                    print(f"[{idx+1}번] 중복 체크 오류: {str(e)[:50]} - 수집 진행", flush=True)
 
                             # 여기까지 왔다는 것은 실제로 처리할 상품
                             processed_indices.add(idx)
 
-                            # ✅ 클릭 전 요소로 스크롤 (Playwright 자동 스크롤 방지)
-                            await product.scroll_into_view_if_needed()
+                            # 🧹 Sliding Window: 오래된 오버레이 제거 (메모리 최적화)
+                            if idx > self.OVERLAY_WINDOW:
+                                old_idx = idx - self.OVERLAY_WINDOW - 1
+                                await page.evaluate(f'''() => {{
+                                    const oldOverlay = document.getElementById('product-overlay-{old_idx}');
+                                    if (oldOverlay) {{
+                                        oldOverlay.remove();
+                                        console.log('[Overlay] #{old_idx+1}번 오버레이 제거 (Sliding Window)');
+                                    }}
+                                }}''')
+
+                            # 🎨 시각적 피드백: 노란 테두리 (클릭 준비)
+                            print(f"[{idx+1}번] 클릭 준비 중...", flush=True)
+                            await page.evaluate(f'''(index) => {{
+                                const links = document.querySelectorAll('a[data-filtered="true"]');
+                                const link = links[index];
+                                if (link) {{
+                                    // 노란 테두리 + 오버레이 텍스트
+                                    link.style.border = '5px solid #FFD700';
+                                    link.style.boxShadow = '0 0 20px #FFD700';
+                                    link.style.position = 'relative';
+
+                                    // 상품 번호 오버레이
+                                    const overlay = document.createElement('div');
+                                    overlay.id = 'product-overlay-' + index;
+                                    overlay.style.cssText = `
+                                        position: absolute;
+                                        top: 0;
+                                        left: 0;
+                                        background: rgba(255, 215, 0, 0.9);
+                                        color: black;
+                                        padding: 10px;
+                                        font-size: 20px;
+                                        font-weight: bold;
+                                        z-index: 10000;
+                                        pointer-events: none;
+                                    `;
+                                    overlay.textContent = '[{idx+1}번] 클릭 준비 중...';
+                                    link.appendChild(overlay);
+
+                                    link.scrollIntoView({{ block: 'center', behavior: 'smooth' }});
+                                }}
+                            }}''', idx)
                             await asyncio.sleep(0.5)
+
+                            # 🎨 빨간 테두리 (클릭 진행)
+                            print(f"[{idx+1}번] 클릭 진행 중...", flush=True)
+                            await page.evaluate(f'''(index) => {{
+                                const links = document.querySelectorAll('a[data-filtered="true"]');
+                                const link = links[index];
+                                if (link) {{
+                                    link.style.border = '5px solid #FF0000';
+                                    link.style.boxShadow = '0 0 20px #FF0000';
+
+                                    const overlay = document.getElementById('product-overlay-' + index);
+                                    if (overlay) {{
+                                        overlay.style.background = 'rgba(255, 0, 0, 0.9)';
+                                        overlay.style.color = 'white';
+                                        overlay.textContent = '[{idx+1}번] 클릭 중...';
+                                    }}
+                                }}
+                            }}''', idx)
 
                             await product.click(timeout=10000)
                             await asyncio.sleep(3)
@@ -411,7 +746,25 @@ class SimpleCrawler:
                             # 새 탭 찾기
                             all_pages = context.pages
                             if len(all_pages) <= 1:
-                                print(f"[{idx+1}번] 탭 열림 실패 - SKIP")
+                                errors_in_batch += 1  # 오류 카운트
+                                print(f"[{idx+1}번] 탭 열림 실패 - SKIP", flush=True)
+                                # 회색 테두리 (Skip)
+                                await page.evaluate(f'''(index) => {{
+                                    const links = document.querySelectorAll('a[data-filtered="true"]');
+                                    const link = links[index];
+                                    if (link) {{
+                                        link.style.border = '5px solid #888888';
+                                        link.style.boxShadow = '0 0 20px #888888';
+
+                                        const overlay = document.getElementById('product-overlay-' + index);
+                                        if (overlay) {{
+                                            overlay.style.background = 'rgba(136, 136, 136, 0.9)';
+                                            overlay.style.color = 'white';
+                                            overlay.textContent = '[{idx+1}번] SKIP - 탭 열림 실패';
+                                        }}
+                                    }}
+                                }}''', idx)
+                                await asyncio.sleep(0.5)
                                 continue
 
                             detail_page = all_pages[-1]
@@ -425,6 +778,25 @@ class SimpleCrawler:
                                 self.products_data.append(product_data)
                                 collected_count += 1
                                 collected_in_batch += 1  # 이번 배치에서 수집한 개수
+
+                                # 🎨 초록 테두리 (수집 완료)
+                                print(f"[{idx+1}번] 수집 완료 - {product_data.get('product_name', '')[:30]}...", flush=True)
+                                await page.evaluate(f'''(index) => {{
+                                    const links = document.querySelectorAll('a[data-filtered="true"]');
+                                    const link = links[index];
+                                    if (link) {{
+                                        link.style.border = '5px solid #00FF00';
+                                        link.style.boxShadow = '0 0 20px #00FF00';
+
+                                        const overlay = document.getElementById('product-overlay-' + index);
+                                        if (overlay) {{
+                                            overlay.style.background = 'rgba(0, 255, 0, 0.9)';
+                                            overlay.style.color = 'black';
+                                            overlay.textContent = '[{idx+1}번] ✓ 수집 완료';
+                                        }}
+                                    }}
+                                }}''', idx)
+                                await asyncio.sleep(0.3)
 
                                 # 메모리 최적화: 1000개 초과 시 오래된 데이터 정리 (마지막 500개만 유지)
                                 if len(self.products_data) > 1000:
@@ -459,11 +831,12 @@ class SimpleCrawler:
                             await detail_page.close()
                             await asyncio.sleep(0.5)
 
-                            # ❌ scrollTo(0, 0) 제거 - 네이버 무한 스크롤 방해
+                            # [XX] scrollTo(0, 0) 제거 - 네이버 무한 스크롤 방해
                             # 탭 닫으면 자동으로 원래 페이지로 돌아오고 스크롤 위치 유지됨
 
                         except Exception as e:
-                            print(f"[{idx+1}번] 오류: {str(e)[:50]} - SKIP")
+                            errors_in_batch += 1  # 오류 카운트
+                            print(f"[{idx+1}번] 오류: {str(e)[:50]} - SKIP", flush=True)
                             continue
 
                     # 목표 개수 도달 시 종료
@@ -484,20 +857,34 @@ class SimpleCrawler:
                     if batch_end >= current_total:
                         try:
                             # 배치 완료 상태 출력
-                            print(f"\n[배치 {batch_num}] 완료 - 실제 수집: {collected_in_batch}개 (광고/중복 제외)")
-                            print(f"→ 스크롤 시도: 현재 {current_total}개 상품...")
+                            total_processed = batch_end - batch_start
+                            print(f"\n{'='*60}", flush=True)
+                            print(f"[배치 {batch_num}] 완료 - 처리 통계", flush=True)
+                            print(f"{'='*60}", flush=True)
+                            print(f"  처리 범위: {batch_start+1}~{batch_end}번 (총 {total_processed}개)", flush=True)
+                            print(f"  OK 신규 수집: {collected_in_batch}개", flush=True)
+                            print(f"  -- 중복 Skip: {duplicates_in_batch}개", flush=True)
+                            print(f"  XX 오류 Skip: {errors_in_batch}개", flush=True)
+                            print(f"  >> 누적 수집: {collected_count}개", flush=True)
+                            print(f"{'='*60}", flush=True)
+                            print(f"\n{'='*60}", flush=True)
+                            print(f"[무한 스크롤] 추가 상품 로딩 시작", flush=True)
+                            print(f"{'='*60}", flush=True)
                             before_scroll = current_total
 
                             # 현재 페이지 스크롤 위치 확인
                             scroll_pos = await page.evaluate('window.pageYOffset')
                             doc_height = await page.evaluate('document.body.scrollHeight')
-                            print(f"[DEBUG] 스크롤 전 - 위치: {scroll_pos}px, 문서 높이: {doc_height}px")
+                            print(f"[스크롤 전 상태]", flush=True)
+                            print(f"  현재 필터링된 상품: {current_total}개", flush=True)
+                            print(f"  스크롤 위치: {scroll_pos}px", flush=True)
+                            print(f"  문서 높이: {doc_height}px", flush=True)
 
-                            # ✅ 페이지 안정화 대기 (DOM 변경 완료)
+                            # [OK] 페이지 안정화 대기 (DOM 변경 완료)
                             await asyncio.sleep(2)
 
-                            # ✅ v1.5.7+ 조금씩만 스크롤 (페이지 재정렬 방지)
-                            print(f"[DEBUG] 스크롤 명령 실행 중...")
+                            # [OK] v1.5.7+ 조금씩만 스크롤 (페이지 재정렬 방지)
+                            print(f"\n[스크롤 실행] 800px씩 조금씩 스크롤 (페이지 재정렬 방지)", flush=True)
 
                             # 현재 스크롤 위치에서 800px만 더 스크롤 (조금씩!)
                             scroll_result = await page.evaluate('''() => {
@@ -506,104 +893,108 @@ class SimpleCrawler:
                                 window.scrollTo(0, newScroll);
                                 return {
                                     before: currentScroll,
-                                    after: newScroll
+                                    after: newScroll,
+                                    scrollHeight: document.body.scrollHeight
                                 };
                             }''')
 
-                            print(f"[DEBUG] 스크롤 완료: {scroll_result['before']}px → {scroll_result['after']}px (+800px)")
+                            print(f"  스크롤: {scroll_result['before']}px → {scroll_result['after']}px (+800px)", flush=True)
+                            print(f"  대기 중... (1.5초)", flush=True)
                             await asyncio.sleep(1.5)
 
                             # 스크롤 후 위치 확인
                             await asyncio.sleep(1)
                             scroll_pos_after = await page.evaluate('window.pageYOffset')
-                            print(f"[DEBUG] 스크롤 후 - 위치: {scroll_pos_after}px")
+                            doc_height_after = await page.evaluate('document.body.scrollHeight')
+                            print(f"[스크롤 후 상태]", flush=True)
+                            print(f"  스크롤 위치: {scroll_pos_after}px", flush=True)
+                            if doc_height_after > doc_height:
+                                print(f"  문서 높이: {doc_height_after}px (↑ {doc_height_after - doc_height}px 증가)", flush=True)
+                            else:
+                                print(f"  문서 높이: {doc_height_after}px (변화 없음)", flush=True)
 
                             # 재시도 로직: 최대 3번까지 확인 (각 5초 대기)
+                            print(f"\n[새 상품 대기] 최대 3회 확인 (각 5초 대기)", flush=True)
                             loaded = False
                             for attempt in range(3):
-                                print(f"[DEBUG] 대기 시도 {attempt+1}/3 - {5}초 대기 중...")
+                                print(f"\n  [시도 {attempt+1}/3] 5초 대기 후 상품 확인...", flush=True)
                                 await asyncio.sleep(5)  # 5초 대기
 
-                                product_links_after = await page.query_selector_all('a[class*="ProductCard_link"]')
+                                # [OK] v1.5.9+ 스크롤 후 새로운 상품 필터링 (추천 제외)
+                                filter_result = await page.evaluate('''() => {
+                                    const sort = document.querySelector('#product-sort-address-container');
+                                    if (!sort) return {newFiltered: 0, newRecommendations: 0, totalLinks: 0};
+
+                                    const sortY = sort.getBoundingClientRect().bottom;
+                                    const allLinks = Array.from(document.querySelectorAll('a[class*="ProductCard_link"]'));
+
+                                    let newFilteredCount = 0;
+                                    let newRecommendationCount = 0;
+
+                                    allLinks.forEach(link => {
+                                        const rect = link.getBoundingClientRect();
+                                        const labelId = link.getAttribute('aria-labelledby') || '';
+                                        const isRecommendation = labelId.includes('related_recommend_product_information');
+
+                                        // 아직 필터링 안 된 상품만 처리
+                                        if (!link.hasAttribute('data-filtered')) {
+                                            if (rect.top > sortY && !isRecommendation) {
+                                                link.setAttribute('data-filtered', 'true');
+                                                newFilteredCount++;
+                                            } else if (isRecommendation) {
+                                                newRecommendationCount++;
+                                            }
+                                        }
+                                    });
+
+                                    return {
+                                        newFiltered: newFilteredCount,
+                                        newRecommendations: newRecommendationCount,
+                                        totalLinks: allLinks.length
+                                    };
+                                }''')
+
+                                # [OK] 필터링된 상품만 카운트
+                                product_links_after = await page.query_selector_all('a[data-filtered="true"]')
                                 after_scroll = len(product_links_after)
-                                print(f"[DEBUG] 시도 {attempt+1} 결과: {before_scroll}개 → {after_scroll}개")
+
+                                print(f"  [필터링 결과]", flush=True)
+                                print(f"    전체 링크: {filter_result['totalLinks']}개", flush=True)
+                                print(f"    새로 필터링: {filter_result['newFiltered']}개", flush=True)
+                                print(f"    새로운 추천: {filter_result['newRecommendations']}개 (제외)", flush=True)
+                                print(f"    현재 총 필터링: {after_scroll}개 (이전: {before_scroll}개)", flush=True)
 
                                 if after_scroll > before_scroll:
                                     scroll_count += 1
                                     increase = after_scroll - before_scroll
-                                    print(f"[스크롤 #{scroll_count}] ✅ 성공! {before_scroll}개 → {after_scroll}개 (새로 로드: {increase}개)")
+                                    print(f"\n  [OK] 새 상품 발견! {before_scroll}개 → {after_scroll}개 (새로 로드: {increase}개)", flush=True)
+                                    print(f"  [스크롤 #{scroll_count}] 성공 - 다음 배치로 진행", flush=True)
+
+                                    # 스크롤 시마다 누적 통계 출력
+                                    print(f"\n  [통계] 누적 현황", flush=True)
+                                    print(f"    OK 총 신규 수집: {collected_count}개", flush=True)
+                                    print(f"    -- 총 중복 Skip: {self.skipped_count}개", flush=True)
+                                    print(f"    DB 저장 완료: {self.saved_count}개", flush=True)
+
+                                    consecutive_failures = 0  # 성공 시 실패 카운트 리셋
                                     loaded = True
                                     break
                                 elif attempt < 2:
-                                    print(f"   ⏳ 대기 중... ({(attempt+1)*5}초 경과, 아직 {before_scroll}개)")
+                                    print(f"  [..] 아직 새 상품 없음 - 다시 대기 ({(attempt+1)*5}초 경과)", flush=True)
 
                             if not loaded:
-                                # 상세 디버깅: 왜 멈췄는지 확인
-                                print(f"\n[DEBUG] 상품 로딩 중단 - 원인 분석 중...")
+                                consecutive_failures += 1  # 실패 카운트 증가
 
-                                # 1. DOM 끝 메시지 확인
-                                no_more_msg = await page.evaluate('''() => {
-                                    const allText = document.body.innerText;
-                                    const patterns = [
-                                        '더 이상 상품이 없습니다',
-                                        '마지막 페이지',
-                                        '검색 결과가 없습니다',
-                                        '상품을 모두 확인',
-                                        'No more products'
-                                    ];
-                                    for (const pattern of patterns) {
-                                        if (allText.includes(pattern)) {
-                                            return pattern;
-                                        }
-                                    }
-                                    return null;
-                                }''')
-                                if no_more_msg:
-                                    print(f"[DEBUG] ✓ 네이버 메시지 발견: '{no_more_msg}'")
+                                # v1.8.1 단순화: 3회 연속 실패 시 종료 (오버엔지니어링 제거)
+                                print(f"\n[정지] 새 상품 없음 - 연속 실패: {consecutive_failures}회 / 3회", flush=True)
 
-                                # 2. 페이징 버튼 확인
-                                try:
-                                    next_button = await page.query_selector('a:has-text("다음"), button:has-text("다음"), a[class*="next"], button[class*="next"]')
-                                    if next_button:
-                                        is_visible = await next_button.is_visible()
-                                        if is_visible:
-                                            print(f"[DEBUG] ✓ '다음' 버튼 발견 - 페이징 UI 존재")
-                                            print(f"[INFO] 페이징 버튼 클릭 시도 중...")
-
-                                            try:
-                                                await next_button.click()
-                                                await asyncio.sleep(3)
-
-                                                # 새 상품이 로드되었는지 확인
-                                                new_products = await page.query_selector_all('a[class*="ProductCard_link"]')
-                                                if len(new_products) > after_scroll:
-                                                    print(f"[INFO] ✓ 페이징 성공! {len(new_products) - after_scroll}개 추가 로드")
-                                                    continue  # 다음 배치로 진행
-                                                else:
-                                                    print(f"[DEBUG] ✗ 페이징 버튼 클릭했지만 새 상품 없음")
-                                            except Exception as e:
-                                                print(f"[DEBUG] ✗ 페이징 버튼 클릭 실패: {str(e)[:50]}")
-                                except:
-                                    pass
-
-                                # 3. 페이지 상태 확인
-                                doc_height = await page.evaluate('document.body.scrollHeight')
-                                current_scroll = await page.evaluate('window.pageYOffset')
-                                viewport_height = await page.evaluate('window.innerHeight')
-
-                                print(f"[DEBUG] 페이지 상태:")
-                                print(f"  - URL: {page.url}")
-                                print(f"  - 문서 높이: {doc_height}px")
-                                print(f"  - 현재 스크롤: {current_scroll}px")
-                                print(f"  - 뷰포트 높이: {viewport_height}px")
-                                print(f"  - 스크롤 끝 도달: {current_scroll + viewport_height >= doc_height - 100}")
-
-                                print(f"\n[DEBUG] 최종 - 스크롤 전: {before_scroll}개, 스크롤 후: {after_scroll}개")
-                                print(f"[DEBUG] 종료 원인: 15초 동안 상품 개수 변화 없음")
-
-                                print(f"\n❌ 더 이상 새 상품이 로드되지 않습니다.")
-                                print(f"💡 원인: 네이버 서버가 추가 상품을 제공하지 않음 (페이지 끝 또는 스크롤 제한)")
-                                break
+                                if consecutive_failures >= 3:
+                                    print(f"\n[XX] 3회 연속 실패 - 크롤링 종료", flush=True)
+                                    print(f"[i] 무한 스크롤 끝 도달 또는 네이버 서버가 추가 상품을 제공하지 않음", flush=True)
+                                    break
+                                else:
+                                    print(f"  계속 시도 ({consecutive_failures}/3회)...", flush=True)
+                                    # 다음 배치로 진행 (다시 스크롤 시도)
                         except Exception as e:
                             print(f"\n[배치 {batch_num}] 스크롤 실패: {str(e)[:50]}")
                             print(f"브라우저/페이지가 닫혔거나 네트워크 오류 발생. 수집 종료.")
